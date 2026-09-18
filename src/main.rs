@@ -16,6 +16,7 @@ use tracing::{debug, error, info, warn};
 use ampered::backlight::Controller as Backlight;
 use ampered::config::Config;
 use ampered::core::{Command, Engine, Event, TimerId};
+use ampered::idle::{self, IdleHandle};
 use ampered::ipc::{self, RequestId, Response, StatusData};
 use ampered::power::modes::{self, ModeApplier, SysfsModeSink};
 use ampered::power::supply::{self, FakePowerSource, SupplyHandle, SysfsPowerSource};
@@ -114,6 +115,7 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
     };
     info!(ac = initial.ac, battery = ?initial.battery, "power at startup");
     let supply = supply::spawn(source, initial.clone(), events_tx.clone());
+    let idle = idle::spawn(config.wayland.clone(), events_tx.clone());
 
     let mut daemon = Daemon {
         config_path: cli.config.clone(),
@@ -123,6 +125,7 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
         timers: Timers::new(events_tx.clone()),
         modes: ModeApplier::new(SysfsModeSink::new()),
         backlight,
+        idle,
         supply,
         degraded,
     };
@@ -176,6 +179,7 @@ struct Daemon {
     timers: Timers,
     modes: ModeApplier<SysfsModeSink>,
     backlight: Backlight,
+    idle: IdleHandle,
     supply: SupplyHandle,
     degraded: Vec<String>,
 }
@@ -185,6 +189,7 @@ impl Daemon {
         match command {
             Command::StartTimer(id, after) => self.timers.start(id, after),
             Command::CancelTimer(id) => self.timers.cancel(id),
+            Command::ReplaceIdleStages(stages) => self.idle.replace_stages(stages),
             Command::Dim(percent) => self.backlight.dim_to(percent).await,
             Command::Undim => self.backlight.restore().await,
             Command::ApplyMode(name) => match self.config.modes.get(&name) {
@@ -224,6 +229,10 @@ impl Daemon {
         status.degraded = self.degraded.clone();
         status.power.batteries = self.supply.latest().batteries;
         status.backlight = self.backlight.info();
+        status.idle.backend = idle::BACKEND.to_string();
+        if !status.idle.connected {
+            status.degraded.push("wayland".into());
+        }
         for inhibitor in &mut status.inhibitors {
             inhibitor.expires = self
                 .timers

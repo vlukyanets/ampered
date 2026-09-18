@@ -7,6 +7,7 @@
 pub mod backlight;
 pub mod config;
 pub mod core;
+pub mod idle;
 pub mod ipc;
 pub mod power;
 pub mod timers;
