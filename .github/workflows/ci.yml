@@ -6,6 +6,19 @@ on:
   pull_request:
 
 jobs:
+  style:
+    name: Style
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
   build-and-test:
     name: Build and Test
     runs-on: ubuntu-latest
