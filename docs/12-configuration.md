@@ -39,8 +39,8 @@ Unknown keys are an error (`deny_unknown_fields`).
 
 | Key | Default | Description |
 |---|---|---|
-| `backend` | `"wlr"` | `wlr` / `command` / `none` |
-| `off_command`, `on_command` | — | For `command` |
+| `backend` | `"wlr"` | `wlr` / `command` / `none`; `wlr` is v0.2, see `docs/06-display-dpms.md` |
+| `off_command`, `on_command` | — | For `command`; both are required with that backend |
 
 ## `[modes.<name>]`
 
@@ -52,10 +52,11 @@ Any number of modes. All keys are optional; a missing key means "don't touch it"
 | `cpu_governor` | `schedutil` / `powersave` / `performance` / … |
 | `epp` | `power` / `balance_power` / `balance_performance` / `performance` |
 | `dim_after`, `screen_off_after`, `sleep_after` | Absolute timeouts from the start of idleness |
-| `sysfs` | A table of `"path" = "value"` |
+| `sysfs` | A table of `"path" = "value"`, written in declaration order |
 
 Validation: enabled timeouts must be non-decreasing (`dim ≤ screen_off ≤ sleep`);
-each one `≤ 24h`.
+each one `≤ 24h`. A missing timeout is the same as `"0"` — the stage is
+disabled. `sysfs` paths must be absolute; values are strings or integers.
 
 ## `[auto_mode]`
 

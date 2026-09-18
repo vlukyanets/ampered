@@ -24,7 +24,8 @@ Wants=systemd-logind.service
 Conflicts=power-profiles-daemon.service tlp.service
 
 [Service]
-Type=notify
+# Type=notify needs sd_notify(READY=1), which lands in v0.2.
+Type=simple
 ExecStart=/usr/local/bin/ampered --config /etc/ampered/ampered.toml
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
@@ -40,7 +41,7 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 RestrictAddressFamilies=AF_UNIX AF_NETLINK
 SystemCallFilter=@system-service
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_TIME CAP_SETUID CAP_SETGID
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_TIME CAP_SETUID CAP_SETGID CAP_NET_ADMIN
 
 [Install]
 WantedBy=multi-user.target
@@ -49,8 +50,9 @@ WantedBy=multi-user.target
 `ProtectHome=read-only` — the Wayland socket lives in `/run/user/*`, not
 in `$HOME`; but `off_command` might run something from `~/.local/bin` —
 read-only is enough for that. `CAP_SETUID/SETGID` is for running commands
-as the user (`03-privileges.md`). `Type=notify` requires
-`sd_notify(READY=1)`, which isn't implemented yet — use `Type=simple` for now.
+as the user (`03-privileges.md`), `CAP_NET_ADMIN` for the `power_supply`
+uevent socket (ADR-12). `Type=notify` requires `sd_notify(READY=1)`, which
+isn't implemented yet — the shipped unit uses `Type=simple`.
 
 ## `contrib/90-ampered-backlight.rules`
 

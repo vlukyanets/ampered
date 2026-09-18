@@ -41,6 +41,9 @@ while AC is online, `on_battery` while on battery and not low, and
 `on_low_battery` while on battery and low (per the hysteresis in
 `07-power-supply.md`).
 
+- `[auto_mode] enabled = false`: nothing switches by itself. At startup there
+  is no "current mode" to keep, so the first mode in `[modes]` (alphabetically)
+  is applied; after that only `amperedctl mode <name>` changes it.
 - `amperedctl mode <name>` → `Manual(name)`: auto-switching is disabled.
 - `amperedctl mode auto` → `Auto`, immediate recalculation.
 - `Manual` **does not survive** a daemon restart (no persisted state in v0.1).

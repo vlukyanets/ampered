@@ -2,6 +2,10 @@
 
 ## `wlr` backend (default)
 
+**v0.1 ships `command` and `none` only.** With `backend = "wlr"` the daemon
+warns at startup and behaves as `none`; the protocol client arrives in v0.2
+(`docs/18-roadmap.md`).
+
 `wlr-output-power-management-unstable-v1`:
 
 ```

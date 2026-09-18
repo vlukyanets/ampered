@@ -55,15 +55,15 @@ depends on none of them — only `main.rs` wires commands to their executors.
 | `tokio` | runtime, signals, timers, unix sockets | `async-std` — smaller ecosystem |
 | `wayland-client` 0.31, `wayland-protocols` (staging), `wayland-protocols-wlr` | idle, DPMS | `smithay-client-toolkit` — overkill for two protocols |
 | `zbus` 5 (tokio) | logind | `dbus-rs` — C dependency |
-| `serde`, `toml`, `serde_json`, `humantime-serde` | config, IPC | |
+| `serde`, `toml` (`preserve_order`), `serde_json`, `humantime` | config, IPC | `humantime-serde` — `"0"` = disabled needs a custom deserializer anyway |
 | `clap` (derive) | CLI | |
 | `tracing`, `tracing-subscriber` (env-filter) | logging | `log` — no spans |
 | `thiserror`, `anyhow` | errors | |
-| `nix` (user, signal, fs, socket) | setuid for commands, netlink udev | raw `libc` — less type safety |
+| `nix` (user, signal, fs, socket, net) | setuid for commands, netlink udev, socket group | raw `libc` — less type safety |
 | `tempfile` (dev) | sysfs fake tests | |
 
-Optional, to be decided at implementation time: `udev` (if raw netlink
-turns out to be painful), `sd-notify` (for `Type=notify`).
+`udev` (libudev) was rejected in favour of raw netlink — see ADR-12.
+`sd-notify` (for `Type=notify`) is still open, and is scheduled for v0.2.
 
 ## Style
 

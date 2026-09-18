@@ -1,18 +1,22 @@
 # 18 — Roadmap
 
 ## v0.1 — "works on my laptop"
-- [ ] `config`: parsing, validation, a test against the example
-- [ ] `core`: FSM + table-driven tests (no `LongSleep`)
-- [ ] `ipc` + `amperedctl status|mode|modes|watch|reload`
-- [ ] `power::supply` (sysfs + polling; udev if there's time)
-- [ ] `power::modes` + auto-switching with hysteresis
-- [ ] `backlight` with dim/restore
-- [ ] `idle`: `ext-idle-notify-v1` with reconnect
-- [ ] `logind`: suspend, inhibitors, delay lock, `state.json`
-- [ ] `display`: `command` backend (`wlr` in v0.2)
-- [ ] `contrib/ampered.service` with `Type=simple`
+
+The checked items are implemented. Of the tests, only the `config` ones are in
+the tree (`docs/15-testing.md`).
+- [x] `config`: parsing, validation, a test against the example
+- [x] `core`: FSM + table-driven tests (no `LongSleep`)
+- [x] `ipc` + `amperedctl status|mode|modes|watch|reload`
+- [x] `power::supply` (sysfs + polling; udev if there's time)
+- [x] `power::modes` + auto-switching with hysteresis
+- [x] `backlight` with dim/restore
+- [x] `idle`: `ext-idle-notify-v1` with reconnect
+- [x] `logind`: suspend, inhibitors, delay lock, `state.json`
+- [x] `display`: `command` backend (`wlr` in v0.2)
+- [x] `contrib/ampered.service` with `Type=simple`
 
 ## v0.2 — "server"
+- [ ] `[idle] fallback = "logind"` (coarse `IdleHint` polling)
 - [ ] `sleep::rtc` (`wakealarm`, `rtcwake`)
 - [ ] `sleep::planner`: the full cycle, `classify_wake`, `resume_hook`
 - [ ] Hibernate checks at startup

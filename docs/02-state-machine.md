@@ -39,6 +39,8 @@ enum Event {
     Timer(TimerId),               // Grace | SleepRetry | AwakeWindow | InhibitExpiry(id)
     Ipc(RequestId, Request),
     IdleBackendChanged(bool),     // compositor connected/lost
+    Inhibitors(Vec<Inhibitor>),   // refreshed logind view (ADR-11)
+    SleepBlocked(Vec<Inhibitor>), // a suspend attempt was refused (ADR-11)
     ReloadRequested,
     ShutdownRequested,
 }
@@ -58,7 +60,8 @@ enum Command {
     StartTimer(TimerId, Duration), CancelTimer(TimerId),
     Reply(RequestId, Response),
     Broadcast(StateEvent),        // for subscribe
-    Reload, Shutdown,
+    Reload { reply_to: Option<RequestId> },   // the reload result is the CLI's reply
+    Shutdown,
 }
 ```
 
@@ -73,6 +76,7 @@ enum Command {
 | ScreenOff | Idle(Sleep) | no inhibitors | Suspending | Suspend |
 | ScreenOff | Idle(Sleep) | has inhibitors | ScreenOff | StartTimer(SleepRetry) |
 | ScreenOff | Timer(SleepRetry) | no inhibitors | Suspending | Suspend |
+| Suspending | SleepBlocked | — | the state Suspend was sent from | StartTimer(SleepRetry) |
 | ScreenOff | Activity | — | Active | Undim, Screen(true) |
 | Suspending | Suspending | — | Sleeping | — |
 | Suspending | Activity | logind refused / race | Active | Undim, Screen(true) |
@@ -94,8 +98,12 @@ The full set of `LongSleep` transitions is in `10-long-sleep-rtc.md`.
 - `Undim` is always sent when leaving `Dimmed`/`ScreenOff`/`Sleeping`, even
   if `pre_dim` is empty — `backlight` decides what to do on its own
   (`05-backlight.md`).
-- `Suspend` is only sent from `ScreenOff`, `LongSleep(Armed)`, or via
-  `Ipc(Sleep)` from any state.
+- `Suspend` is only sent from a state where the machine is still awake
+  (`Active`, `Dimmed`, `ScreenOff`), from `LongSleep(Armed)`, or via
+  `Ipc(Sleep)` from any state. Normally it is `ScreenOff`; the earlier states
+  are reachable when the stages before `sleep` are disabled, or when a
+  compositor restart delivers `idled` for `sleep` first
+  (`04-idle-wayland.md`).
 - On `ShutdownRequested` the FSM must restore the screen and brightness —
   otherwise `systemctl stop ampered` would leave the user with a dark screen.
 
