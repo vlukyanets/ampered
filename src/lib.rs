@@ -9,5 +9,6 @@ pub mod config;
 pub mod core;
 pub mod idle;
 pub mod ipc;
+pub mod logind;
 pub mod power;
 pub mod timers;

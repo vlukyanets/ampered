@@ -8,11 +8,12 @@
 - [ ] `power::modes` + auto-switching with hysteresis
 - [ ] `backlight` with dim/restore
 - [ ] `idle`: `ext-idle-notify-v1` with reconnect
-- [ ] `logind`: suspend, inhibitors, delay lock, `state.json`
+- [x] `logind`: suspend, inhibitors, delay lock, `state.json`
 - [ ] `display`: `command` backend (`wlr` in v0.2)
 - [ ] `contrib/ampered.service` with `Type=simple`
 
 ## v0.2 — "server"
+- [ ] `[idle] fallback = "logind"` (coarse `IdleHint` polling)
 - [ ] `sleep::rtc` (`wakealarm`, `rtcwake`)
 - [ ] `sleep::planner`: the full cycle, `classify_wake`, `resume_hook`
 - [ ] Hibernate checks at startup

@@ -14,10 +14,11 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use ampered::backlight::Controller as Backlight;
-use ampered::config::Config;
+use ampered::config::{Config, IdleFallback};
 use ampered::core::{Command, Engine, Event, TimerId};
 use ampered::idle::{self, IdleHandle};
 use ampered::ipc::{self, RequestId, Response, StatusData};
+use ampered::logind::{self, LogindHandle, SavedState, SharedState};
 use ampered::power::modes::{self, ModeApplier, SysfsModeSink};
 use ampered::power::supply::{self, FakePowerSource, SupplyHandle, SysfsPowerSource};
 use ampered::power::{PowerSnapshot, PowerSource};
@@ -116,6 +117,17 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
     info!(ac = initial.ac, battery = ?initial.battery, "power at startup");
     let supply = supply::spawn(source, initial.clone(), events_tx.clone());
     let idle = idle::spawn(config.wayland.clone(), events_tx.clone());
+    if config.idle.fallback == IdleFallback::Logind {
+        warn!("[idle] fallback = \"logind\" is not implemented in v0.1; ext-idle-notify only");
+    }
+
+    let saved: SharedState = Arc::new(std::sync::Mutex::new(SavedState::default()));
+    let logind = logind::connect(config.clone(), events_tx.clone(), saved.clone()).await;
+    match &logind {
+        Some(handle) if !handle.hibernate_available() => degraded.push("hibernate".into()),
+        Some(_) => {}
+        None => degraded.push("logind".into()),
+    }
 
     let mut daemon = Daemon {
         config_path: cli.config.clone(),
@@ -126,11 +138,14 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
         modes: ModeApplier::new(SysfsModeSink::new()),
         backlight,
         idle,
+        logind,
+        saved,
         supply,
         degraded,
     };
 
     let mut engine = Engine::new(config, initial);
+    daemon.remember(&engine);
     let mut commands = engine.start();
 
     info!(version = env!("CARGO_PKG_VERSION"), "ampered started");
@@ -163,6 +178,7 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
         }
         debug!(?event, "event");
         commands = engine.handle(event);
+        daemon.remember(&engine);
     }
 }
 
@@ -180,6 +196,8 @@ struct Daemon {
     modes: ModeApplier<SysfsModeSink>,
     backlight: Backlight,
     idle: IdleHandle,
+    logind: Option<LogindHandle>,
+    saved: SharedState,
     supply: SupplyHandle,
     degraded: Vec<String>,
 }
@@ -190,6 +208,14 @@ impl Daemon {
             Command::StartTimer(id, after) => self.timers.start(id, after),
             Command::CancelTimer(id) => self.timers.cancel(id),
             Command::ReplaceIdleStages(stages) => self.idle.replace_stages(stages),
+            Command::Suspend { method, force } => match &self.logind {
+                Some(logind) => logind.suspend(method, force),
+                None => {
+                    warn!("no logind, cannot sleep");
+                    // Nothing will happen, so do not leave the FSM waiting.
+                    return Outcome::Continue(engine.handle(Event::Activity));
+                }
+            },
             Command::Dim(percent) => self.backlight.dim_to(percent).await,
             Command::Undim => self.backlight.restore().await,
             Command::ApplyMode(name) => match self.config.modes.get(&name) {
@@ -269,6 +295,17 @@ impl Daemon {
             commands.push(Command::Reply(id, Response::Ok));
         }
         commands
+    }
+
+    /// Keeps `state.json` ready: the delay lock gives us only a few seconds
+    /// before a suspend (`docs/09-sleep-logind.md`).
+    fn remember(&self, engine: &Engine) {
+        *self.saved.lock().expect("state lock") = SavedState {
+            state: engine.state().to_string(),
+            mode: engine.mode().name().to_string(),
+            reason: "regular".into(),
+            saved_at: None,
+        };
     }
 
     fn cleanup(&self) {
