@@ -1,7 +1,7 @@
 //! Configuration file parsing and validation.
 //!
 //! Reference: `docs/12-configuration.md`, example: `docs/13-config-example.md`
-//! (kept in sync with `examples/ampered.toml`).
+//! (kept in sync with `examples/ampered.toml`, which a test enforces).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -493,5 +493,237 @@ impl Mode {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EXAMPLE: &str = include_str!("../examples/ampered.toml");
+    const DOC: &str = include_str!("../docs/13-config-example.md");
+
+    fn toml_block(doc: &str, index: usize) -> String {
+        doc.split("```toml")
+            .nth(index + 1)
+            .and_then(|rest| rest.split("```").next())
+            .expect("fenced toml block")
+            .trim_start_matches('\n')
+            .to_string()
+    }
+
+    /// `examples/ampered.toml` is generated from the docs; they must not drift.
+    #[test]
+    fn example_matches_the_documented_one() {
+        assert_eq!(EXAMPLE, toml_block(DOC, 0));
+    }
+
+    #[test]
+    fn example_parses_and_validates() {
+        let config = Config::parse(EXAMPLE).expect("parse");
+        config.validate().expect("validate");
+
+        assert_eq!(config.general.socket_group, "users");
+        assert_eq!(config.backlight.dim_percent, 10);
+        assert_eq!(config.backlight.transition, Duration::from_millis(400));
+        assert_eq!(config.modes.len(), 4);
+        assert_eq!(config.modes["balanced"].dim_after, Duration::from_secs(300));
+        assert_eq!(config.modes["server"].sleep_after, Duration::ZERO);
+        assert_eq!(
+            config.modes["server"].sysfs_writes(),
+            vec![(
+                "/sys/class/leds/platform::kbd_backlight/brightness",
+                "0".to_string()
+            )]
+        );
+        assert_eq!(config.sleep.method, SleepMethod::Suspend);
+        assert!(!config.server.enabled);
+        assert_eq!(config.server.resume_hook, None);
+    }
+
+    /// The second block in the doc is a fragment of the server variant.
+    #[test]
+    fn server_variant_fragment_parses() {
+        let fragment = toml_block(DOC, 1);
+        let config = Config::parse(&fragment).expect("parse");
+        assert!(config.server.enabled);
+        assert_eq!(config.server.check_interval, Duration::from_secs(30 * 60));
+        assert_eq!(
+            config.server.resume_hook.as_deref(),
+            Some("systemctl start docker.service")
+        );
+    }
+
+    #[test]
+    fn defaults_match_the_reference() {
+        let config = Config::default();
+        assert_eq!(config.general.log_level, "info");
+        assert_eq!(
+            config.general.socket,
+            PathBuf::from("/run/ampered/ampered.sock")
+        );
+        assert_eq!(config.wayland.display, "wayland-1");
+        assert_eq!(
+            config.wayland.reconnect_max_backoff,
+            Duration::from_secs(60)
+        );
+        assert_eq!(config.idle.fallback, IdleFallback::None);
+        assert_eq!(config.backlight.device, "auto");
+        assert_eq!(config.backlight.min_percent, 1);
+        assert_eq!(config.display.backend, DisplayBackend::Wlr);
+        assert_eq!(config.auto_mode.low_battery_percent, 20);
+        assert_eq!(config.sleep.sleep_retry, Duration::from_secs(120));
+        assert_eq!(config.server.grace_period, Duration::from_secs(180));
+        assert_eq!(config.server.rtc_device, "rtc0");
+    }
+
+    #[test]
+    fn zero_means_disabled() {
+        assert_eq!(parse_duration("0").unwrap(), Duration::ZERO);
+        assert_eq!(parse_duration(" 0 ").unwrap(), Duration::ZERO);
+        assert_eq!(parse_duration("1h30m").unwrap(), Duration::from_secs(5400));
+        assert!(parse_duration("").is_err());
+        assert!(parse_duration("soon").is_err());
+        assert_eq!(format_duration(Duration::ZERO), "0");
+        assert_eq!(format_duration(Duration::from_secs(300)), "5m");
+    }
+
+    #[test]
+    fn unknown_keys_are_rejected() {
+        let err = Config::parse("[general]\nlog_levle = \"info\"\n").unwrap_err();
+        assert!(err.to_string().contains("log_levle"), "{err}");
+    }
+
+    #[test]
+    fn timeouts_must_not_decrease() {
+        let text = r#"
+            [modes.x]
+            dim_after = "10m"
+            screen_off_after = "5m"
+        "#;
+        let err = Config::parse(text).unwrap().validate().unwrap_err();
+        assert!(err.to_string().contains("dim_after"), "{err}");
+    }
+
+    #[test]
+    fn disabled_stages_are_skipped_by_the_ordering_check() {
+        let text = r#"
+            [auto_mode]
+            enabled = false
+            [modes.x]
+            dim_after = "0"
+            screen_off_after = "5m"
+            sleep_after = "0"
+        "#;
+        Config::parse(text).unwrap().validate().expect("valid");
+    }
+
+    #[test]
+    fn timeouts_are_capped_at_24h() {
+        let text = "[auto_mode]\nenabled = false\n[modes.x]\nsleep_after = \"25h\"\n";
+        let err = Config::parse(text).unwrap().validate().unwrap_err();
+        assert!(
+            err.to_string().contains("sleep_after must not exceed"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn auto_mode_must_reference_existing_modes() {
+        let text = r#"
+            [modes.balanced]
+            [auto_mode]
+            on_ac = "balanced"
+            on_battery = "nope"
+            on_low_battery = "balanced"
+        "#;
+        let err = Config::parse(text).unwrap().validate().unwrap_err();
+        assert!(err.to_string().contains("no such mode"), "{err}");
+    }
+
+    #[test]
+    fn disabled_auto_mode_needs_no_modes() {
+        Config::parse("[auto_mode]\nenabled = false\n")
+            .unwrap()
+            .validate()
+            .expect("valid");
+    }
+
+    #[test]
+    fn command_backend_needs_both_commands() {
+        let text = "[auto_mode]\nenabled = false\n[display]\nbackend = \"command\"\noff_command = \"true\"\n";
+        let err = Config::parse(text).unwrap().validate().unwrap_err();
+        assert!(err.to_string().contains("on_command"), "{err}");
+    }
+
+    #[test]
+    fn check_interval_has_a_floor() {
+        let text = "[auto_mode]\nenabled = false\n[server]\ncheck_interval = \"1m\"\n";
+        let err = Config::parse(text).unwrap().validate().unwrap_err();
+        assert!(err.to_string().contains("check_interval"), "{err}");
+    }
+
+    #[test]
+    fn sysfs_paths_must_be_absolute() {
+        let text = "[auto_mode]\nenabled = false\n[modes.x.sysfs]\n\"relative/path\" = \"1\"\n";
+        let err = Config::parse(text).unwrap().validate().unwrap_err();
+        assert!(err.to_string().contains("absolute"), "{err}");
+    }
+
+    #[test]
+    fn sysfs_keeps_declaration_order() {
+        let text = r#"
+            [modes.x.sysfs]
+            "/b" = "2"
+            "/a" = 1
+            "/c" = "3"
+        "#;
+        let config = Config::parse(text).unwrap();
+        let writes = config.modes["x"].sysfs_writes();
+        assert_eq!(
+            writes,
+            vec![
+                ("/b", "2".to_string()),
+                ("/a", "1".to_string()),
+                ("/c", "3".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn percentages_are_range_checked() {
+        for (text, key) in [
+            (
+                "[auto_mode]\nenabled = false\n[backlight]\ndim_percent = 120\n",
+                "dim_percent",
+            ),
+            (
+                "[auto_mode]\nenabled = false\n[backlight]\nmin_percent = 101\n",
+                "min_percent",
+            ),
+            (
+                "[auto_mode]\nenabled = false\nlow_battery_percent = 200\n",
+                "low_battery_percent",
+            ),
+            (
+                "[auto_mode]\nenabled = false\n[server]\nbattery_critical_percent = 150\n",
+                "battery_critical_percent",
+            ),
+        ] {
+            let config = Config::parse(text).expect("parse");
+            let err = config.validate().unwrap_err();
+            assert!(err.to_string().contains(key), "{key}: {err}");
+        }
+    }
+
+    /// A percentage of exactly 100 is a legal value, not an off-by-one victim.
+    #[test]
+    fn a_hundred_percent_is_allowed() {
+        Config::parse(
+            "[auto_mode]\nenabled = false\n[backlight]\ndim_percent = 100\nmin_percent = 100\n",
+        )
+        .unwrap()
+        .validate()
+        .expect("valid");
     }
 }

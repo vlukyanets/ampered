@@ -1,7 +1,9 @@
 //! The state machine — the only place where decisions are made.
 //!
 //! Reference: `docs/02-state-machine.md`. `Engine::handle` is pure: no I/O, no
-//! clock, no sysfs. Timers are commands going out and events coming back.
+//! clock, no sysfs. Timers are commands going out and events coming back, so
+//! the documented transition table can be exercised without real time or a
+//! real machine (ADR-2).
 
 use std::fmt;
 use std::sync::Arc;

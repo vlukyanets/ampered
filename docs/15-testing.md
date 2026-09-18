@@ -1,5 +1,13 @@
 # 15 — Testing
 
+> **Status:** only the `config` tests are in the tree — parsing, every rule in
+> `validate()`, and the check that keeps `examples/ampered.toml` identical to
+> the fenced block in `13-config-example.md`. They touch nothing outside the
+> process: no sysfs, no sockets, no D-Bus, no subprocesses. The suites for
+> `core`, `backlight`, `power`, `display`, `ipc` and `timers` are not in the
+> tree. What follows describes the full intended suite, and stands as the
+> specification a restored one should work from.
+
 ## Levels
 
 | Level | What | How | When |

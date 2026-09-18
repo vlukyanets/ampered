@@ -1,6 +1,9 @@
 # 18 — Roadmap
 
 ## v0.1 — "works on my laptop"
+
+The checked items are implemented. Of the tests, only the `config` ones are in
+the tree (`docs/15-testing.md`).
 - [x] `config`: parsing, validation, a test against the example
 - [x] `core`: FSM + table-driven tests (no `LongSleep`)
 - [x] `ipc` + `amperedctl status|mode|modes|watch|reload`
