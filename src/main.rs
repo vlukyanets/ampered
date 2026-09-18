@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -242,7 +242,7 @@ impl Daemon {
             Command::Reply(id, response) => self.reply(id, response),
             Command::Broadcast(event) => self.server.broadcast(event),
             Command::Reload { reply_to } => {
-                return Outcome::Continue(self.reload(reply_to, engine).await)
+                return Outcome::Continue(self.reload(reply_to, engine).await);
             }
             Command::Shutdown => return Outcome::Shutdown,
             // Wired up in the steps that follow (`CLAUDE.md`, implementation order).

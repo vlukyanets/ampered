@@ -263,10 +263,10 @@ fn diff(previous: &PowerSnapshot, current: &PowerSnapshot) -> Vec<Event> {
     if previous.ac != current.ac {
         events.push(Event::AcChanged(current.ac));
     }
-    if let Some(percent) = current.battery {
-        if previous.battery != Some(percent) {
-            events.push(Event::Battery(percent));
-        }
+    if let Some(percent) = current.battery
+        && previous.battery != Some(percent)
+    {
+        events.push(Event::Battery(percent));
     }
     events
 }
@@ -291,7 +291,7 @@ struct UdevMonitor {
 
 impl UdevMonitor {
     fn open() -> io::Result<UdevMonitor> {
-        use nix::sys::socket::{bind, socket, AddressFamily, NetlinkAddr, SockFlag, SockType};
+        use nix::sys::socket::{AddressFamily, NetlinkAddr, SockFlag, SockType, bind, socket};
 
         let fd = socket(
             AddressFamily::Netlink,

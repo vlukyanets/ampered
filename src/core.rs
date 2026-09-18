@@ -11,10 +11,10 @@ use std::time::{Duration, SystemTime};
 
 use tracing::{debug, info};
 
-use crate::config::{format_duration, Config, Mode, SleepMethod};
+use crate::config::{Config, Mode, SleepMethod, format_duration};
 use crate::ipc::{
-    IdleInfo, InhibitWhat, InhibitorInfo, ModeInfo, ModesData, PowerInfo, Request, RequestId,
-    Response, ServerInfo, SleepInfo, StagesInfo, StateEvent, StatusData, MAX_INHIBIT_TTL,
+    IdleInfo, InhibitWhat, InhibitorInfo, MAX_INHIBIT_TTL, ModeInfo, ModesData, PowerInfo, Request,
+    RequestId, Response, ServerInfo, SleepInfo, StagesInfo, StateEvent, StatusData,
 };
 use crate::power::PowerSnapshot;
 
