@@ -13,6 +13,7 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
+use ampered::backlight::Controller as Backlight;
 use ampered::config::Config;
 use ampered::core::{Command, Engine, Event, TimerId};
 use ampered::ipc::{self, RequestId, Response, StatusData};
@@ -91,6 +92,11 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
 
     let mut degraded = modes::detect_conflicts().await;
 
+    let backlight = Backlight::from_config(&config.backlight);
+    if !backlight.is_available() {
+        degraded.push("backlight".into());
+    }
+
     let source: Arc<dyn PowerSource + Send + Sync> = match &cli.fake_power {
         Some(spec) => {
             warn!(spec, "using a fake power source");
@@ -116,6 +122,7 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
         server,
         timers: Timers::new(events_tx.clone()),
         modes: ModeApplier::new(SysfsModeSink::new()),
+        backlight,
         supply,
         degraded,
     };
@@ -131,6 +138,8 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
             match daemon.execute(command, &mut engine).await {
                 Outcome::Continue(more) => queue.extend(more),
                 Outcome::Shutdown => {
+                    // The undim must finish before the process does.
+                    daemon.backlight.settle().await;
                     daemon.cleanup();
                     info!("ampered stopped");
                     return Ok(());
@@ -166,6 +175,7 @@ struct Daemon {
     server: ipc::Server,
     timers: Timers,
     modes: ModeApplier<SysfsModeSink>,
+    backlight: Backlight,
     supply: SupplyHandle,
     degraded: Vec<String>,
 }
@@ -175,6 +185,8 @@ impl Daemon {
         match command {
             Command::StartTimer(id, after) => self.timers.start(id, after),
             Command::CancelTimer(id) => self.timers.cancel(id),
+            Command::Dim(percent) => self.backlight.dim_to(percent).await,
+            Command::Undim => self.backlight.restore().await,
             Command::ApplyMode(name) => match self.config.modes.get(&name) {
                 Some(mode) => self.modes.apply(&name, mode),
                 None => error!(
@@ -211,6 +223,7 @@ impl Daemon {
     fn enrich_status(&self, status: &mut StatusData) {
         status.degraded = self.degraded.clone();
         status.power.batteries = self.supply.latest().batteries;
+        status.backlight = self.backlight.info();
         for inhibitor in &mut status.inhibitors {
             inhibitor.expires = self
                 .timers
