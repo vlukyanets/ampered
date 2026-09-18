@@ -16,6 +16,7 @@ use tracing::{debug, error, info, warn};
 use ampered::backlight::Controller as Backlight;
 use ampered::config::{Config, IdleFallback};
 use ampered::core::{Command, Engine, Event, TimerId};
+use ampered::display::Display;
 use ampered::idle::{self, IdleHandle};
 use ampered::ipc::{self, RequestId, Response, StatusData};
 use ampered::logind::{self, LogindHandle, SavedState, SharedState};
@@ -98,6 +99,10 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
     if !backlight.is_available() {
         degraded.push("backlight".into());
     }
+    let display = Display::from_config(&config);
+    if !display.is_available() {
+        degraded.push("display".into());
+    }
 
     let source: Arc<dyn PowerSource + Send + Sync> = match &cli.fake_power {
         Some(spec) => {
@@ -137,6 +142,7 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
         timers: Timers::new(events_tx.clone()),
         modes: ModeApplier::new(SysfsModeSink::new()),
         backlight,
+        display,
         idle,
         logind,
         saved,
@@ -195,6 +201,7 @@ struct Daemon {
     timers: Timers,
     modes: ModeApplier<SysfsModeSink>,
     backlight: Backlight,
+    display: Display,
     idle: IdleHandle,
     logind: Option<LogindHandle>,
     saved: SharedState,
@@ -216,6 +223,7 @@ impl Daemon {
                     return Outcome::Continue(engine.handle(Event::Activity));
                 }
             },
+            Command::Screen(on) => self.display.set(on).await,
             Command::Dim(percent) => self.backlight.dim_to(percent).await,
             Command::Undim => self.backlight.restore().await,
             Command::ApplyMode(name) => match self.config.modes.get(&name) {
