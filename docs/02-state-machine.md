@@ -39,6 +39,8 @@ enum Event {
     Timer(TimerId),               // Grace | SleepRetry | AwakeWindow | InhibitExpiry(id)
     Ipc(RequestId, Request),
     IdleBackendChanged(bool),     // compositor connected/lost
+    Inhibitors(Vec<Inhibitor>),   // refreshed logind view (ADR-11)
+    SleepBlocked(Vec<Inhibitor>), // a suspend attempt was refused (ADR-11)
     ReloadRequested,
     ShutdownRequested,
 }
@@ -58,7 +60,8 @@ enum Command {
     StartTimer(TimerId, Duration), CancelTimer(TimerId),
     Reply(RequestId, Response),
     Broadcast(StateEvent),        // for subscribe
-    Reload, Shutdown,
+    Reload { reply_to: Option<RequestId> },   // the reload result is the CLI's reply
+    Shutdown,
 }
 ```
 
@@ -73,6 +76,7 @@ enum Command {
 | ScreenOff | Idle(Sleep) | no inhibitors | Suspending | Suspend |
 | ScreenOff | Idle(Sleep) | has inhibitors | ScreenOff | StartTimer(SleepRetry) |
 | ScreenOff | Timer(SleepRetry) | no inhibitors | Suspending | Suspend |
+| Suspending | SleepBlocked | — | the state Suspend was sent from | StartTimer(SleepRetry) |
 | ScreenOff | Activity | — | Active | Undim, Screen(true) |
 | Suspending | Suspending | — | Sleeping | — |
 | Suspending | Activity | logind refused / race | Active | Undim, Screen(true) |

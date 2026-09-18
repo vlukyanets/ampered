@@ -64,6 +64,23 @@ fn de_duration<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
     parse_duration(&s).map_err(serde::de::Error::custom)
 }
 
+/// `#[serde(with = "crate::config::duration_str")]` for durations that travel
+/// over IPC as the same strings the config uses.
+pub mod duration_str {
+    use super::{format_duration, parse_duration};
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::time::Duration;
+
+    pub fn serialize<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&format_duration(*d))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
+        let s = String::deserialize(d)?;
+        parse_duration(&s).map_err(serde::de::Error::custom)
+    }
+}
+
 // ------------------------------------------------------------------- config
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]

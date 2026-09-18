@@ -5,3 +5,6 @@
 //! with `docs/01-architecture.md`; every module links to its own document.
 
 pub mod config;
+pub mod core;
+pub mod ipc;
+pub mod power;
