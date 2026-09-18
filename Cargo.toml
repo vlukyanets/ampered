@@ -15,6 +15,10 @@ path = "src/lib.rs"
 name = "ampered"
 path = "src/main.rs"
 
+[[bin]]
+name = "amperedctl"
+path = "src/bin/amperedctl.rs"
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

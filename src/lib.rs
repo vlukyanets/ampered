@@ -8,3 +8,4 @@ pub mod config;
 pub mod core;
 pub mod ipc;
 pub mod power;
+pub mod timers;

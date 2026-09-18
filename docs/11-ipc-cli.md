@@ -55,7 +55,8 @@ Exception — `subscribe`: a stream of events until the client disconnects.
 
 ### `subscribe`
 
-Each line is one of:
+The first line is the usual `{"ok":true}`, confirming the client is attached.
+After that each line is one of:
 `{"event":"state","from":"Active","to":"Dimmed"}`,
 `{"event":"mode","name":"powersave"}`, `{"event":"power","ac":false}`,
 `{"event":"long-sleep","phase":"armed","next_wake":"..."}`.
