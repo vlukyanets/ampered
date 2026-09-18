@@ -17,16 +17,14 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct Display {
     backend: Backend,
+    session: Session,
     /// Idempotency lives here, not in the FSM (`docs/06-display-dpms.md`).
+    /// `None` means "unknown", which is also where a failed command leaves it.
     last: Option<bool>,
 }
 
 enum Backend {
-    Command {
-        off: String,
-        on: String,
-        session: Session,
-    },
+    Command { off: String, on: String },
     None,
 }
 
@@ -53,14 +51,7 @@ impl Display {
                 let off = config.display.off_command.clone().unwrap_or_default();
                 let on = config.display.on_command.clone().unwrap_or_default();
                 info!("display backend: command");
-                Backend::Command {
-                    off,
-                    on,
-                    session: Session::discover(
-                        &config.wayland.runtime_dir,
-                        &config.wayland.display,
-                    ),
-                }
+                Backend::Command { off, on }
             }
             DisplayBackend::None => {
                 info!("display backend: none");
@@ -76,6 +67,7 @@ impl Display {
         };
         Display {
             backend,
+            session: Session::discover(&config.wayland.runtime_dir, &config.wayland.display),
             last: None,
         }
     }
@@ -91,21 +83,23 @@ impl Display {
             debug!(on, "screen already in that state");
             return;
         }
-        self.last = Some(on);
 
-        let Backend::Command {
-            off,
-            on: on_cmd,
-            session,
-        } = &self.backend
-        else {
+        let command = match &self.backend {
+            Backend::None => None,
+            Backend::Command { off, on: on_cmd } => {
+                let command = if on { on_cmd } else { off };
+                (!command.is_empty()).then(|| command.clone())
+            }
+        };
+        let Some(command) = command else {
+            self.last = Some(on);
             return;
         };
-        let command = if on { on_cmd } else { off };
-        if command.is_empty() {
-            return;
-        }
-        session.run(command).await;
+
+        // A helper that failed leaves the panel in an unknown state, so the
+        // repeat check must not latch: `Screen(true)` on resume and on
+        // shutdown has to be free to try again.
+        self.last = self.session.run(&command).await.then_some(on);
     }
 }
 
@@ -120,7 +114,7 @@ impl Session {
 
     /// Runs the helper as the owner of `runtime_dir`: `swaymsg` and friends
     /// need that uid to reach the compositor's socket (`docs/03-privileges.md`).
-    async fn run(&self, command: &str) {
+    async fn run(&self, command: &str) -> bool {
         let mut child = Command::new("sh");
         child
             .arg("-c")
@@ -146,11 +140,11 @@ impl Session {
             Ok(Ok(output)) => output,
             Ok(Err(err)) => {
                 warn!(command, %err, "display command failed to start");
-                return;
+                return false;
             }
             Err(_) => {
                 warn!(command, "display command timed out");
-                return;
+                return false;
             }
         };
 
@@ -162,7 +156,9 @@ impl Session {
                 stderr = stderr.trim(),
                 "display command failed"
             );
+            return false;
         }
+        true
     }
 }
 

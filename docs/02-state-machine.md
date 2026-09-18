@@ -98,8 +98,12 @@ The full set of `LongSleep` transitions is in `10-long-sleep-rtc.md`.
 - `Undim` is always sent when leaving `Dimmed`/`ScreenOff`/`Sleeping`, even
   if `pre_dim` is empty — `backlight` decides what to do on its own
   (`05-backlight.md`).
-- `Suspend` is only sent from `ScreenOff`, `LongSleep(Armed)`, or via
-  `Ipc(Sleep)` from any state.
+- `Suspend` is only sent from a state where the machine is still awake
+  (`Active`, `Dimmed`, `ScreenOff`), from `LongSleep(Armed)`, or via
+  `Ipc(Sleep)` from any state. Normally it is `ScreenOff`; the earlier states
+  are reachable when the stages before `sleep` are disabled, or when a
+  compositor restart delivers `idled` for `sleep` first
+  (`04-idle-wayland.md`).
 - On `ShutdownRequested` the FSM must restore the screen and brightness —
   otherwise `systemctl stop ampered` would leave the user with a dark screen.
 

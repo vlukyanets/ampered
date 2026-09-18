@@ -1,8 +1,7 @@
 //! The state machine — the only place where decisions are made.
 //!
 //! Reference: `docs/02-state-machine.md`. `Engine::handle` is pure: no I/O, no
-//! clock, no sysfs. Timers are commands going out and events coming back, so
-//! every row of the documented transition table is a plain `#[test]`.
+//! clock, no sysfs. Timers are commands going out and events coming back.
 
 use std::fmt;
 use std::sync::Arc;
@@ -269,10 +268,7 @@ impl Engine {
 
     /// Commands to run once at startup: put the machine into the current mode.
     pub fn start(&mut self) -> Vec<Command> {
-        vec![
-            Command::ApplyMode(self.mode.name().to_string()),
-            Command::ReplaceIdleStages(self.stages()),
-        ]
+        self.mode_commands()
     }
 
     pub fn state(&self) -> State {
@@ -300,10 +296,20 @@ impl Engine {
         if let ModeSelection::Auto(_) = self.mode {
             self.mode = ModeSelection::Auto(self.auto_mode_name());
         }
-        vec![
-            Command::ApplyMode(self.mode.name().to_string()),
-            Command::ReplaceIdleStages(self.stages()),
-        ]
+        self.mode_commands()
+    }
+
+    /// Put the current mode into effect. A config with no `[modes]` at all has
+    /// nothing to apply, and `ApplyMode("")` would only make `main` log an
+    /// error, so the command is left out rather than sent empty.
+    fn mode_commands(&self) -> Vec<Command> {
+        let name = self.mode.name().to_string();
+        let mut commands = Vec::new();
+        if !name.is_empty() {
+            commands.push(Command::ApplyMode(name));
+        }
+        commands.push(Command::ReplaceIdleStages(self.stages()));
+        commands
     }
 
     pub fn handle(&mut self, event: Event) -> Vec<Command> {
@@ -528,28 +534,41 @@ impl Engine {
             return false;
         };
         let threshold = self.config.auto_mode.low_battery_percent;
+        // Capped at 100: with a threshold above 95 the band would otherwise
+        // never clear, and `low` would be a one-way trip.
+        let clears_at = threshold.saturating_add(5).min(100);
         if percent <= threshold {
             true
-        } else if percent >= threshold.saturating_add(5) {
+        } else if percent >= clears_at {
             false
         } else {
             self.low
         }
     }
 
+    /// The mode auto-switching wants right now.
+    ///
+    /// With `enabled = false` there is nothing to compute and whatever is in
+    /// effect stays in effect — except at startup, where nothing is in effect
+    /// yet. Falling back to the first declared mode there keeps the daemon from
+    /// coming up with an empty mode name and, with it, no idle stages at all
+    /// (`docs/08-power-modes.md`).
     fn auto_mode_name(&self) -> String {
         let auto = &self.config.auto_mode;
-        let name = if !auto.enabled {
-            // Auto-switching off: whatever is in effect stays in effect.
-            return self.mode.name().to_string();
-        } else if self.power.ac {
-            &auto.on_ac
+        if !auto.enabled {
+            let current = self.mode.name();
+            if !current.is_empty() {
+                return current.to_string();
+            }
+            return self.config.modes.keys().next().cloned().unwrap_or_default();
+        }
+        if self.power.ac {
+            auto.on_ac.clone()
         } else if self.low {
-            &auto.on_low_battery
+            auto.on_low_battery.clone()
         } else {
-            &auto.on_battery
-        };
-        name.clone()
+            auto.on_battery.clone()
+        }
     }
 
     fn reapply_auto_mode(&mut self) -> Vec<Command> {
@@ -567,11 +586,9 @@ impl Engine {
     fn mode_changed(&self) -> Vec<Command> {
         let name = self.mode.name().to_string();
         info!(mode = %name, source = self.mode.source(), "mode applied");
-        vec![
-            Command::ApplyMode(name.clone()),
-            Command::ReplaceIdleStages(self.stages()),
-            Command::Broadcast(StateEvent::Mode { name }),
-        ]
+        let mut commands = self.mode_commands();
+        commands.push(Command::Broadcast(StateEvent::Mode { name }));
+        commands
     }
 
     // ------------------------------------------------------------------- ipc

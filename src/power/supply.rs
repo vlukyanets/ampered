@@ -159,13 +159,13 @@ impl FakePowerSource {
     }
 
     pub fn set(&self, snapshot: PowerSnapshot) {
-        *self.snapshot.lock().expect("fake power lock") = snapshot;
+        *crate::locked(&self.snapshot) = snapshot;
     }
 }
 
 impl PowerSource for FakePowerSource {
     fn snapshot(&self) -> io::Result<PowerSnapshot> {
-        Ok(self.snapshot.lock().expect("fake power lock").clone())
+        Ok(crate::locked(&self.snapshot).clone())
     }
 }
 
@@ -191,7 +191,7 @@ impl SupplyHandle {
     }
 
     pub fn latest(&self) -> PowerSnapshot {
-        self.latest.lock().expect("supply lock").clone()
+        crate::locked(&self.latest).clone()
     }
 }
 
@@ -243,7 +243,7 @@ pub fn spawn(
                     continue;
                 }
             };
-            *latest.lock().expect("supply lock") = snapshot.clone();
+            *crate::locked(&latest) = snapshot.clone();
 
             for event in diff(&previous, &snapshot) {
                 if events.send(event).await.is_err() {

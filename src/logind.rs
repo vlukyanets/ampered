@@ -69,14 +69,17 @@ pub struct LogindHandle {
 }
 
 impl LogindHandle {
-    pub fn suspend(&self, method: SleepMethod, force: bool) {
+    /// `false` means the request never reached the bus — the caller has to
+    /// undo the FSM's move into `Suspending`, or it would wait there forever.
+    #[must_use]
+    pub fn suspend(&self, method: SleepMethod, force: bool) -> bool {
         let method = self.usable(method);
-        if self
-            .requests
-            .try_send(Request::Sleep { method, force })
-            .is_err()
-        {
-            warn!("logind actor is busy, suspend request dropped");
+        match self.requests.try_send(Request::Sleep { method, force }) {
+            Ok(()) => true,
+            Err(err) => {
+                warn!(%err, "logind actor is busy, suspend request dropped");
+                false
+            }
         }
     }
 
@@ -237,7 +240,7 @@ fn state_path() -> PathBuf {
 }
 
 fn write_state(path: &PathBuf, saved: &SharedState) {
-    let mut state = saved.lock().expect("state lock").clone();
+    let mut state = crate::locked(saved).clone();
     state.saved_at = Some(humantime::format_rfc3339_seconds(SystemTime::now()).to_string());
     let Ok(text) = serde_json::to_string(&state) else {
         return;

@@ -13,3 +13,14 @@ pub mod ipc;
 pub mod logind;
 pub mod power;
 pub mod timers;
+
+/// Locks a mutex, taking the data back even if a panicking task poisoned it.
+///
+/// Everything behind these locks is plain state that can be read and rewritten;
+/// carrying on with it beats taking the whole daemon down, and `CLAUDE.md`
+/// rules out `unwrap()` outside tests.
+pub fn locked<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}

@@ -261,7 +261,7 @@ impl Server {
     /// Answers the request `Command::Reply` names. A vanished client is not an
     /// error — it simply hung up before we got there.
     pub fn reply(&self, id: RequestId, response: Response) {
-        match self.pending.lock().expect("ipc lock").remove(&id) {
+        match crate::locked(&self.pending).remove(&id) {
             Some(channel) => {
                 let _ = channel.send(response);
             }
@@ -377,18 +377,14 @@ async fn serve_connection(
 
         let id = server.take_id();
         let (reply_tx, reply_rx) = oneshot::channel();
-        server
-            .pending
-            .lock()
-            .expect("ipc lock")
-            .insert(id, reply_tx);
+        crate::locked(&server.pending).insert(id, reply_tx);
 
         if events
             .send(crate::core::Event::Ipc(id, request))
             .await
             .is_err()
         {
-            server.pending.lock().expect("ipc lock").remove(&id);
+            crate::locked(&server.pending).remove(&id);
             write_line(&mut write_half, &Response::error("daemon is shutting down")).await?;
             return Ok(());
         }

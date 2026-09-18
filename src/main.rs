@@ -215,14 +215,20 @@ impl Daemon {
             Command::StartTimer(id, after) => self.timers.start(id, after),
             Command::CancelTimer(id) => self.timers.cancel(id),
             Command::ReplaceIdleStages(stages) => self.idle.replace_stages(stages),
-            Command::Suspend { method, force } => match &self.logind {
-                Some(logind) => logind.suspend(method, force),
-                None => {
-                    warn!("no logind, cannot sleep");
-                    // Nothing will happen, so do not leave the FSM waiting.
+            Command::Suspend { method, force } => {
+                let delivered = match &self.logind {
+                    Some(logind) => logind.suspend(method, force),
+                    None => {
+                        warn!("no logind, cannot sleep");
+                        false
+                    }
+                };
+                if !delivered {
+                    // Nothing is going to happen, so do not leave the FSM
+                    // sitting in Suspending until the user touches the machine.
                     return Outcome::Continue(engine.handle(Event::Activity));
                 }
-            },
+            }
             Command::Screen(on) => self.display.set(on).await,
             Command::Dim(percent) => self.backlight.dim_to(percent).await,
             Command::Undim => self.backlight.restore().await,
@@ -236,7 +242,7 @@ impl Daemon {
             Command::Reply(id, response) => self.reply(id, response),
             Command::Broadcast(event) => self.server.broadcast(event),
             Command::Reload { reply_to } => {
-                return Outcome::Continue(self.reload(reply_to, engine))
+                return Outcome::Continue(self.reload(reply_to, engine).await)
             }
             Command::Shutdown => return Outcome::Shutdown,
             // Wired up in the steps that follow (`CLAUDE.md`, implementation order).
@@ -276,7 +282,7 @@ impl Daemon {
     }
 
     /// A rejected config leaves everything as it was (`docs/12-configuration.md`).
-    fn reload(&mut self, reply_to: Option<RequestId>, engine: &mut Engine) -> Vec<Command> {
+    async fn reload(&mut self, reply_to: Option<RequestId>, engine: &mut Engine) -> Vec<Command> {
         info!(path = %self.config_path.display(), "reloading config");
         let config = match Config::load(&self.config_path) {
             Ok(config) => config,
@@ -296,6 +302,18 @@ impl Daemon {
             warn!("[wayland] changed; it takes effect after a restart");
         }
 
+        // Everything except [general].socket and [wayland] is live
+        // (`docs/12-configuration.md`), which includes the two sections the
+        // engine knows nothing about.
+        if config.backlight != self.config.backlight {
+            self.backlight.reconfigure(&config.backlight).await;
+            self.mark_degraded("backlight", !self.backlight.is_available());
+        }
+        if config.display != self.config.display {
+            self.display = Display::from_config(&config);
+            self.mark_degraded("display", !self.display.is_available());
+        }
+
         let config = Arc::new(config);
         self.config = config.clone();
         let mut commands = engine.set_config(config);
@@ -308,12 +326,20 @@ impl Daemon {
     /// Keeps `state.json` ready: the delay lock gives us only a few seconds
     /// before a suspend (`docs/09-sleep-logind.md`).
     fn remember(&self, engine: &Engine) {
-        *self.saved.lock().expect("state lock") = SavedState {
+        *ampered::locked(&self.saved) = SavedState {
             state: engine.state().to_string(),
             mode: engine.mode().name().to_string(),
             reason: "regular".into(),
             saved_at: None,
         };
+    }
+
+    /// Keeps `status.degraded` honest after a reload changed a subsystem.
+    fn mark_degraded(&mut self, subsystem: &str, degraded: bool) {
+        self.degraded.retain(|entry| entry != subsystem);
+        if degraded {
+            self.degraded.push(subsystem.to_string());
+        }
     }
 
     fn cleanup(&self) {

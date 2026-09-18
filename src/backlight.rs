@@ -132,6 +132,8 @@ enum State {
 
 pub struct Controller {
     sink: Option<Arc<dyn BacklightSink>>,
+    /// The configured device name, kept so a reload can tell it changed.
+    device: String,
     state: State,
     /// Brightness before the dim, in raw units.
     pre_dim: Option<u32>,
@@ -153,6 +155,7 @@ impl Controller {
     pub fn new(config: &BacklightConfig, sink: Option<Arc<dyn BacklightSink>>) -> Controller {
         Controller {
             sink,
+            device: config.device.clone(),
             state: State::Active,
             pre_dim: None,
             written: Arc::new(AtomicU32::new(0)),
@@ -177,6 +180,29 @@ impl Controller {
         self.sink.is_some()
     }
 
+    /// Applies a reloaded `[backlight]` section. Only a changed `device` costs
+    /// the dim state; the rest is picked up in place, so a reload in the middle
+    /// of a dim still restores the right brightness afterwards.
+    pub async fn reconfigure(&mut self, config: &BacklightConfig) {
+        self.min_percent = config.min_percent;
+        self.transition = config.transition;
+        if config.device == self.device {
+            return;
+        }
+        self.stop_fade().await;
+        info!(
+            from = self.device,
+            to = config.device,
+            "backlight device changed"
+        );
+        self.device = config.device.clone();
+        self.sink = SysfsBacklight::discover(Path::new(SYSFS_ROOT), &config.device)
+            .map(|found| Arc::new(found) as Arc<dyn BacklightSink>);
+        self.pre_dim = None;
+        self.state = State::Active;
+        self.complained = false;
+    }
+
     /// Dim to `percent` of `max_brightness`, never below `min_percent`.
     pub async fn dim_to(&mut self, percent: u8) {
         let Some(sink) = self.sink.clone() else {
@@ -188,6 +214,9 @@ impl Controller {
         if self.state == State::Dimmed {
             return;
         }
+        // A restore fade may still be ramping; `pre_dim` must be the
+        // brightness the user had, not a step of that ramp.
+        self.stop_fade().await;
 
         let current = match sink.read() {
             Ok(value) => value,

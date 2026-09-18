@@ -58,20 +58,16 @@ async fn reconnect_loop(
             stages = update;
         }
 
-        match session(&socket, &events, &mut stages_rx, &mut stages).await {
-            Ok(had_backend) => {
-                // A clean disconnect: the compositor went away.
-                info!("compositor connection closed");
-                if had_backend {
-                    let _ = events.send(Event::IdleBackendChanged(false)).await;
-                    // Stages are gone with it; do not leave the FSM waiting.
-                    let _ = events.send(Event::Activity).await;
-                }
-                backoff = Duration::from_secs(1);
-            }
-            Err(err) => {
-                debug!(socket = %socket.display(), %err, "no compositor yet");
-            }
+        // True only if the backend had been announced as available, which is
+        // the case for every way of losing a live connection — a clean
+        // disconnect and a protocol error alike.
+        if session(&socket, &events, &mut stages_rx, &mut stages).await {
+            info!("compositor connection lost");
+            let _ = events.send(Event::IdleBackendChanged(false)).await;
+            // The stages are gone with it; do not leave the FSM waiting for a
+            // `resumed` that can no longer arrive.
+            let _ = events.send(Event::Activity).await;
+            backoff = Duration::from_secs(1);
         }
 
         tokio::time::sleep(backoff).await;
@@ -80,17 +76,28 @@ async fn reconnect_loop(
 }
 
 /// One connection, from the first roundtrip until the socket dies.
-/// Returns whether the idle backend had been announced as available.
+///
+/// Returns whether the idle backend had been announced as available — that is,
+/// whether the caller has a live connection to mourn. Errors are logged here so
+/// that every way out of the loop, clean or not, goes through the same answer.
 async fn session(
     socket: &std::path::Path,
     events: &mpsc::Sender<Event>,
     stages_rx: &mut mpsc::UnboundedReceiver<Stages>,
     stages: &mut Stages,
-) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+) -> bool {
     // The system unit does not see `graphical-session.target`, so the socket
     // path is configured explicitly (`docs/03-privileges.md`).
-    let stream = UnixStream::connect(socket)?;
-    let connection = Connection::from_socket(stream)?;
+    let connection = match UnixStream::connect(socket)
+        .map_err(|err| err.to_string())
+        .and_then(|stream| Connection::from_socket(stream).map_err(|err| err.to_string()))
+    {
+        Ok(connection) => connection,
+        Err(err) => {
+            debug!(socket = %socket.display(), err, "no compositor yet");
+            return false;
+        }
+    };
     let mut queue = connection.new_event_queue();
     let handle = queue.handle();
     connection.display().get_registry(&handle, ());
@@ -99,7 +106,10 @@ async fn session(
         wanted: *stages,
         ..Watcher::default()
     };
-    queue.roundtrip(&mut watcher)?;
+    if let Err(err) = queue.roundtrip(&mut watcher) {
+        debug!(%err, "wayland handshake failed");
+        return false;
+    }
 
     if watcher.notifier.is_none() {
         // The global may still show up later; keep the connection and wait.
@@ -108,16 +118,28 @@ async fn session(
     }
 
     let async_fd =
-        AsyncFd::with_interest(FdOf(connection.as_fd().as_raw_fd()), Interest::READABLE)?;
+        match AsyncFd::with_interest(FdOf(connection.as_fd().as_raw_fd()), Interest::READABLE) {
+            Ok(async_fd) => async_fd,
+            Err(err) => {
+                warn!(%err, "cannot watch the wayland socket");
+                return watcher.announced;
+            }
+        };
 
     loop {
-        queue.dispatch_pending(&mut watcher)?;
+        if let Err(err) = queue.dispatch_pending(&mut watcher) {
+            debug!(%err, "wayland dispatch failed");
+            return watcher.announced;
+        }
         for event in watcher.outgoing.drain(..) {
             if events.send(event).await.is_err() {
-                return Ok(watcher.announced);
+                return watcher.announced;
             }
         }
-        connection.flush()?;
+        if let Err(err) = connection.flush() {
+            debug!(%err, "wayland flush failed");
+            return watcher.announced;
+        }
 
         let Some(guard) = connection.prepare_read() else {
             // More events arrived while we were dispatching.
@@ -133,13 +155,23 @@ async fn session(
                         watcher.set_stages(&handle, update);
                     }
                     // The daemon is going away.
-                    None => return Ok(watcher.announced),
+                    None => return watcher.announced,
                 }
             }
             ready = async_fd.readable() => {
-                let mut ready = ready?;
+                let mut ready = match ready {
+                    Ok(ready) => ready,
+                    Err(err) => {
+                        warn!(%err, "cannot wait on the wayland socket");
+                        return watcher.announced;
+                    }
+                };
                 match guard.read() {
-                    Ok(_) => ready.clear_ready(),
+                    // Readiness stays set on purpose: tokio's epoll is
+                    // edge-triggered, and clearing it with bytes still in the
+                    // socket would park us with unread events. The next
+                    // iteration reads again until WouldBlock.
+                    Ok(_) => {}
                     Err(wayland_client::backend::WaylandError::Io(err))
                         if err.kind() == std::io::ErrorKind::WouldBlock =>
                     {
@@ -148,7 +180,7 @@ async fn session(
                     // Anything else means the compositor is gone.
                     Err(err) => {
                         debug!(%err, "wayland read failed");
-                        return Ok(watcher.announced);
+                        return watcher.announced;
                     }
                 }
             }
