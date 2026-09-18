@@ -2,6 +2,9 @@
 //!
 //! Reference: `docs/07-power-supply.md`, `docs/08-power-modes.md`.
 
+pub mod modes;
+pub mod supply;
+
 /// What a single read of `/sys/class/power_supply` yields.
 ///
 /// "Low battery" is not part of it: that flag carries hysteresis and therefore

@@ -16,7 +16,9 @@ use tracing::{debug, error, info, warn};
 use ampered::config::Config;
 use ampered::core::{Command, Engine, Event, TimerId};
 use ampered::ipc::{self, RequestId, Response, StatusData};
-use ampered::power::PowerSnapshot;
+use ampered::power::modes::{self, ModeApplier, SysfsModeSink};
+use ampered::power::supply::{self, FakePowerSource, SupplyHandle, SysfsPowerSource};
+use ampered::power::{PowerSnapshot, PowerSource};
 use ampered::timers::Timers;
 
 const DEFAULT_CONFIG: &str = "/etc/ampered/ampered.toml";
@@ -39,6 +41,10 @@ struct Cli {
     /// Validate the config and exit.
     #[arg(long)]
     check: bool,
+
+    /// Pretend the power supply reads `ac`, `bat` or `bat:NN` (development).
+    #[arg(long, value_name = "SPEC")]
+    fake_power: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -83,18 +89,38 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
         .with_context(|| format!("ipc socket {}", socket.display()))?;
     spawn_signal_handlers(events_tx.clone())?;
 
+    let mut degraded = modes::detect_conflicts().await;
+
+    let source: Arc<dyn PowerSource + Send + Sync> = match &cli.fake_power {
+        Some(spec) => {
+            warn!(spec, "using a fake power source");
+            Arc::new(FakePowerSource::parse(spec).map_err(anyhow::Error::msg)?)
+        }
+        None => Arc::new(SysfsPowerSource::new()),
+    };
+    let initial = match source.snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            warn!(%err, "cannot read the power supply, assuming AC");
+            degraded.push("power".into());
+            PowerSnapshot::on_ac()
+        }
+    };
+    info!(ac = initial.ac, battery = ?initial.battery, "power at startup");
+    let supply = supply::spawn(source, initial.clone(), events_tx.clone());
+
     let mut daemon = Daemon {
         config_path: cli.config.clone(),
         config: config.clone(),
         socket,
         server,
         timers: Timers::new(events_tx.clone()),
-        degraded: Vec::new(),
+        modes: ModeApplier::new(SysfsModeSink::new()),
+        supply,
+        degraded,
     };
 
-    // The real power source arrives with `power::supply`; until then the
-    // engine starts from "we are on AC" and corrects itself on the first event.
-    let mut engine = Engine::new(config, PowerSnapshot::on_ac());
+    let mut engine = Engine::new(config, initial);
     let mut commands = engine.start();
 
     info!(version = env!("CARGO_PKG_VERSION"), "ampered started");
@@ -117,8 +143,11 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
             daemon.cleanup();
             return Ok(());
         };
-        if let Event::Timer(id) = &event {
-            daemon.timers.forget(*id);
+        match &event {
+            Event::Timer(id) => daemon.timers.forget(*id),
+            // Values read straight after resume can still be the old ones.
+            Event::Resumed => daemon.supply.recheck_after_resume(),
+            _ => {}
         }
         debug!(?event, "event");
         commands = engine.handle(event);
@@ -136,6 +165,8 @@ struct Daemon {
     socket: PathBuf,
     server: ipc::Server,
     timers: Timers,
+    modes: ModeApplier<SysfsModeSink>,
+    supply: SupplyHandle,
     degraded: Vec<String>,
 }
 
@@ -144,6 +175,13 @@ impl Daemon {
         match command {
             Command::StartTimer(id, after) => self.timers.start(id, after),
             Command::CancelTimer(id) => self.timers.cancel(id),
+            Command::ApplyMode(name) => match self.config.modes.get(&name) {
+                Some(mode) => self.modes.apply(&name, mode),
+                None => error!(
+                    mode = name,
+                    "the engine asked for a mode that is not configured"
+                ),
+            },
             Command::Reply(id, response) => self.reply(id, response),
             Command::Broadcast(event) => self.server.broadcast(event),
             Command::Reload { reply_to } => {
@@ -172,6 +210,7 @@ impl Daemon {
     /// has no clock at all.
     fn enrich_status(&self, status: &mut StatusData) {
         status.degraded = self.degraded.clone();
+        status.power.batteries = self.supply.latest().batteries;
         for inhibitor in &mut status.inhibitors {
             inhibitor.expires = self
                 .timers

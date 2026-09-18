@@ -67,3 +67,11 @@ returns the FSM to the state the suspend was requested from and arms
 `SleepRetry`. Reason: a fresh inhibitor (`systemd-inhibit make`) must never lose
 a race with a cached list. Consequences: two events instead of one, and a sleep
 attempt can be rejected after `Command::Suspend` was already sent.
+
+## ADR-12 — udev over raw netlink, not libudev
+**2026-09.** The open question in `docs/07-power-supply.md` is settled: we bind
+`NETLINK_KOBJECT_UEVENT` group 1 with `nix` and match `SUBSYSTEM=power_supply`
+in the NUL-separated payload. Reason: no C dependency, and the kernel's uevent
+format is a dozen lines of parsing. Consequences: group 1 needs CAP_NET_ADMIN,
+which the root unit has; without it the actor warns once and lives on the 60s
+poll, so a non-root development run still works.

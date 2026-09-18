@@ -59,11 +59,11 @@ depends on none of them — only `main.rs` wires commands to their executors.
 | `clap` (derive) | CLI | |
 | `tracing`, `tracing-subscriber` (env-filter) | logging | `log` — no spans |
 | `thiserror`, `anyhow` | errors | |
-| `nix` (user, signal, fs, socket) | setuid for commands, netlink udev | raw `libc` — less type safety |
+| `nix` (user, signal, fs, socket, net) | setuid for commands, netlink udev, socket group | raw `libc` — less type safety |
 | `tempfile` (dev) | sysfs fake tests | |
 
-Optional, to be decided at implementation time: `udev` (if raw netlink
-turns out to be painful), `sd-notify` (for `Type=notify`).
+`udev` (libudev) was rejected in favour of raw netlink — see ADR-12.
+`sd-notify` (for `Type=notify`) is still open, and is scheduled for v0.2.
 
 ## Style
 
