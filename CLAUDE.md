@@ -18,7 +18,7 @@ hibernate at critical battery.
 
 ## Stack and constraints
 
-- Rust, edition 2021, MSRV 1.78. Async — `tokio`. Single process, actors on channels.
+- Rust, edition 2024, MSRV 1.98. Async — `tokio`. Single process, actors on channels.
 - Wayland: `wayland-client` 0.31, `ext-idle-notify-v1` (staging), `wlr-output-power-management`.
 - D-Bus: `zbus` (logind only). No UPower — we read `/sys/class/power_supply` ourselves.
 - Config: TOML (`serde` + `toml` + `humantime-serde`). CLI: `clap`.

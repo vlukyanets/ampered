@@ -8,8 +8,8 @@ use std::os::fd::{AsFd, AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-use tokio::io::unix::AsyncFd;
 use tokio::io::Interest;
+use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use wayland_client::protocol::{wl_registry, wl_seat};
