@@ -55,7 +55,7 @@ depends on none of them — only `main.rs` wires commands to their executors.
 | `tokio` | runtime, signals, timers, unix sockets | `async-std` — smaller ecosystem |
 | `wayland-client` 0.31, `wayland-protocols` (staging), `wayland-protocols-wlr` | idle, DPMS | `smithay-client-toolkit` — overkill for two protocols |
 | `zbus` 5 (tokio) | logind | `dbus-rs` — C dependency |
-| `serde`, `toml`, `serde_json`, `humantime-serde` | config, IPC | |
+| `serde`, `toml` (`preserve_order`), `serde_json`, `humantime` | config, IPC | `humantime-serde` — `"0"` = disabled needs a custom deserializer anyway |
 | `clap` (derive) | CLI | |
 | `tracing`, `tracing-subscriber` (env-filter) | logging | `log` — no spans |
 | `thiserror`, `anyhow` | errors | |
