@@ -345,3 +345,204 @@ fn is_power_supply_change(message: &[u8]) -> bool {
     }
     subsystem && action
 }
+
+#[cfg(test)]
+mod tests {
+    //! `docs/07-power-supply.md` against a tempdir laid out like
+    //! `/sys/class/power_supply`. Nothing here opens netlink.
+
+    use super::*;
+
+    fn supply(root: &Path, name: &str, fields: &[(&str, &str)]) {
+        let dir = root.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        for (field, value) in fields {
+            fs::write(dir.join(field), format!("{value}\n")).unwrap();
+        }
+    }
+
+    #[test]
+    fn reads_ac_and_averages_batteries_by_design_capacity() {
+        let root = tempfile::tempdir().unwrap();
+        supply(root.path(), "AC0", &[("type", "Mains"), ("online", "1")]);
+        supply(
+            root.path(),
+            "BAT0",
+            &[
+                ("type", "Battery"),
+                ("capacity", "80"),
+                ("energy_full", "50000"),
+            ],
+        );
+        // A small top-up battery counts for less.
+        supply(
+            root.path(),
+            "BAT1",
+            &[
+                ("type", "Battery"),
+                ("capacity", "20"),
+                ("charge_full", "10000"),
+            ],
+        );
+        // A wireless mouse: scope = Device, ignored.
+        supply(
+            root.path(),
+            "hidpp_battery_0",
+            &[("type", "Battery"), ("scope", "Device"), ("capacity", "5")],
+        );
+
+        let snapshot = SysfsPowerSource::with_root(root.path()).snapshot().unwrap();
+        assert!(snapshot.ac);
+        // (80 * 50000 + 20 * 10000) / 60000 = 70
+        assert_eq!(snapshot.battery, Some(70));
+        assert_eq!(snapshot.batteries, vec!["BAT0", "BAT1"]);
+    }
+
+    #[test]
+    fn any_online_charger_counts() {
+        let root = tempfile::tempdir().unwrap();
+        supply(root.path(), "AC0", &[("type", "Mains"), ("online", "0")]);
+        supply(
+            root.path(),
+            "ucsi-source-psy-USBC000:001",
+            &[("type", "USB"), ("online", "1")],
+        );
+        let snapshot = SysfsPowerSource::with_root(root.path()).snapshot().unwrap();
+        assert!(snapshot.ac);
+        // A desktop: no battery at all.
+        assert_eq!(snapshot.battery, None);
+        assert!(snapshot.batteries.is_empty());
+
+        fs::write(root.path().join("ucsi-source-psy-USBC000:001/online"), "0").unwrap();
+        let snapshot = SysfsPowerSource::with_root(root.path()).snapshot().unwrap();
+        assert!(!snapshot.ac);
+    }
+
+    #[test]
+    fn a_battery_without_capacity_is_skipped_and_values_are_clamped() {
+        let root = tempfile::tempdir().unwrap();
+        supply(
+            root.path(),
+            "BAT0",
+            &[("type", "Battery"), ("status", "Unknown")],
+        );
+        supply(
+            root.path(),
+            "BAT1",
+            &[("type", "Battery"), ("capacity", "120")],
+        );
+        let snapshot = SysfsPowerSource::with_root(root.path()).snapshot().unwrap();
+        assert!(!snapshot.ac);
+        assert_eq!(snapshot.battery, Some(100));
+        assert_eq!(snapshot.batteries, vec!["BAT1"]);
+    }
+
+    #[test]
+    fn missing_root_is_an_error() {
+        assert!(
+            SysfsPowerSource::with_root("/nonexistent/power_supply")
+                .snapshot()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn weighted_average_rounds_to_nearest() {
+        let batteries = |values: &[(u8, u64)]| -> Vec<(String, u8, u64)> {
+            values
+                .iter()
+                .enumerate()
+                .map(|(i, (capacity, full))| (format!("BAT{i}"), *capacity, *full))
+                .collect()
+        };
+        assert_eq!(weighted_capacity(&[]), None);
+        assert_eq!(weighted_capacity(&batteries(&[(49, 1)])), Some(49));
+        // 49.5 → 50, 49.4 → 49
+        assert_eq!(weighted_capacity(&batteries(&[(49, 1), (50, 1)])), Some(50));
+        assert_eq!(weighted_capacity(&batteries(&[(49, 3), (50, 2)])), Some(49));
+        assert_eq!(weighted_capacity(&batteries(&[(100, 0), (0, 0)])), None);
+    }
+
+    #[test]
+    fn diff_reports_only_real_changes() {
+        let on_ac = PowerSnapshot {
+            ac: true,
+            battery: Some(80),
+            batteries: vec!["BAT0".into()],
+        };
+        assert_eq!(diff(&on_ac, &on_ac), vec![]);
+
+        let unplugged = PowerSnapshot {
+            ac: false,
+            battery: Some(79),
+            ..on_ac.clone()
+        };
+        assert_eq!(
+            diff(&on_ac, &unplugged),
+            vec![Event::AcChanged(false), Event::Battery(79)]
+        );
+
+        // A battery that disappears is not an event; one that appears is.
+        let gone = PowerSnapshot {
+            battery: None,
+            ..on_ac.clone()
+        };
+        assert_eq!(diff(&on_ac, &gone), vec![]);
+        assert_eq!(diff(&gone, &on_ac), vec![Event::Battery(80)]);
+    }
+
+    #[test]
+    fn uevent_filter() {
+        let message = |fields: &[&str]| fields.join("\0").into_bytes();
+        assert!(is_power_supply_change(&message(&[
+            "change@/devices/LNXSYSTM:00/ACPI0003:00/power_supply/AC0",
+            "ACTION=change",
+            "SUBSYSTEM=power_supply",
+            "POWER_SUPPLY_NAME=AC0",
+        ])));
+        assert!(is_power_supply_change(&message(&[
+            "ACTION=add",
+            "SUBSYSTEM=power_supply"
+        ])));
+        assert!(!is_power_supply_change(&message(&[
+            "ACTION=change",
+            "SUBSYSTEM=backlight"
+        ])));
+        assert!(!is_power_supply_change(&message(&[
+            "ACTION=bind",
+            "SUBSYSTEM=power_supply"
+        ])));
+        assert!(!is_power_supply_change(b""));
+        assert!(!is_power_supply_change(&[0xff, 0xfe, 0]));
+    }
+
+    #[test]
+    fn fake_source_spec() {
+        assert_eq!(
+            FakePowerSource::parse("ac").unwrap().snapshot().unwrap(),
+            PowerSnapshot::on_ac()
+        );
+        let bat = FakePowerSource::parse("bat").unwrap().snapshot().unwrap();
+        assert!(!bat.ac);
+        assert_eq!(bat.battery, Some(50));
+
+        let bat15 = FakePowerSource::parse("bat:15")
+            .unwrap()
+            .snapshot()
+            .unwrap();
+        assert!(!bat15.ac);
+        assert_eq!(bat15.battery, Some(15));
+        assert_eq!(bat15.batteries, vec!["BAT0"]);
+
+        let ac90 = FakePowerSource::parse("ac:90").unwrap().snapshot().unwrap();
+        assert!(ac90.ac);
+        assert_eq!(ac90.battery, Some(90));
+
+        assert!(FakePowerSource::parse("bat:full").is_err());
+        assert!(FakePowerSource::parse("solar").is_err());
+
+        let fake = FakePowerSource::parse("ac").unwrap();
+        fake.set(bat15.clone());
+        assert_eq!(fake.snapshot().unwrap(), bat15);
+    }
+}
