@@ -42,9 +42,11 @@ While in `LongSleep`, idle stages are not created
 | Any | Ipc(LongSleep) | server.enabled | Grace | StartTimer(Grace, 0) |
 | Grace | AcChanged(true) | | Active | CancelTimer(Grace) |
 | Grace | Timer(Grace) | | Armed | ReplaceIdleStages(None), ScheduleWake |
+| Armed | WakeScheduled(true) | ac | Active | RunHook, ApplyMode, ReplaceIdleStages |
 | Armed | WakeScheduled(true) | no inhibitors | Armed | Suspend |
 | Armed | WakeScheduled(false) / SleepBlocked / Activity | the alarm or the suspend didn't happen | Armed | sleep_failures += 1; < 3 → StartTimer(AwakeWindow), ≥ 3 → Active |
 | Armed | Suspending | | Sleeping | |
+| Armed | Timer(AwakeWindow) | ac | Active | RunHook, ApplyMode, ReplaceIdleStages |
 | Armed | Timer(AwakeWindow) | retry | Armed | ScheduleWake |
 | Sleeping | Resumed | ac | Active | RunHook, ApplyMode, ReplaceIdleStages |
 | Sleeping | Resumed | battery ≤ critical | Checking | Broadcast(critical), Suspend{Hibernate, force} or PowerOff, StartTimer(AwakeWindow) |
@@ -71,6 +73,9 @@ state at 10%.
 
 The daemon restarted in the middle of the cycle (`state.json` says
 `LongSleep`, no AC at startup) starts in `Checking` with the window running.
+
+A config reload past `Grace` keeps the idle stages off; the mode's stages
+come back with the exit from the cycle.
 
 ## Why `awake_window`
 

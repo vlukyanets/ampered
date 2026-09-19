@@ -334,7 +334,20 @@ impl Engine {
         if let ModeSelection::Auto(_) = self.mode {
             self.mode = ModeSelection::Auto(self.auto_mode_name());
         }
-        self.mode_commands()
+        let mut commands = self.mode_commands();
+        // Past Grace the stages are off for the cycle; a reload must not
+        // switch them back on (`docs/10-long-sleep-rtc.md`).
+        if matches!(
+            self.state,
+            State::LongSleep(Phase::Armed | Phase::Sleeping | Phase::Checking)
+        ) {
+            for command in &mut commands {
+                if let Command::ReplaceIdleStages(stages) = command {
+                    *stages = Stages::NONE;
+                }
+            }
+        }
+        commands
     }
 
     /// Put the current mode into effect. A config with no `[modes]` at all has
@@ -596,7 +609,9 @@ impl Engine {
             }
             TimerId::Grace if self.state == State::LongSleep(Phase::Grace) => self.arm(true),
             TimerId::AwakeWindow => match self.state {
-                // A retry after an attempt that did not sleep.
+                // A retry after an attempt that did not sleep — unless the
+                // power came back in the meantime.
+                State::LongSleep(Phase::Armed) if self.power.ac => self.power_is_back(),
                 State::LongSleep(Phase::Armed) => self.arm(false),
                 State::LongSleep(Phase::Checking) => {
                     if self.power.ac || self.battery_critical() {
@@ -639,6 +654,10 @@ impl Engine {
         if !armed {
             warn!("no wake alarm; not sleeping in the cycle without one");
             return self.cycle_failure();
+        }
+        // Power returned while the alarm was being armed: no point sleeping.
+        if self.power.ac {
+            return self.power_is_back();
         }
         let blockers = self.sleep_blockers();
         if !blockers.is_empty() {
@@ -2322,6 +2341,40 @@ mod tests {
         }));
         expected.push(phase("idle"));
         assert_eq!(engine.handle(Event::Activity), expected);
+    }
+
+    #[test]
+    fn power_back_while_armed_ends_the_cycle_without_sleeping() {
+        let mut engine = server_in(Phase::Armed);
+        engine.handle(Event::AcChanged(true));
+        let commands = effects(engine.handle(Event::WakeScheduled(true)));
+        assert_eq!(
+            commands[0],
+            Command::RunHook("systemctl start my-services.target".into())
+        );
+        assert!(!commands.contains(&SUSPEND));
+        assert_eq!(engine.state(), State::Active);
+
+        // The same while waiting out the window after a failed attempt.
+        let mut engine = server_in(Phase::Armed);
+        engine.handle(Event::WakeScheduled(false));
+        engine.handle(Event::AcChanged(true));
+        let commands = effects(engine.handle(Event::Timer(TimerId::AwakeWindow)));
+        assert!(commands.contains(&Command::CancelWake));
+        assert_eq!(engine.state(), State::Active);
+    }
+
+    #[test]
+    fn reload_in_the_cycle_keeps_the_stages_off() {
+        let mut engine = server_in(Phase::Checking);
+        let commands = engine.set_config(server_config(""));
+        assert!(commands.contains(&Command::ReplaceIdleStages(Stages::NONE)));
+        assert_eq!(engine.state(), State::LongSleep(Phase::Checking));
+
+        // In Grace the stages are still the mode's.
+        let mut engine = server_in(Phase::Grace);
+        let commands = engine.set_config(server_config(""));
+        assert!(commands.contains(&Command::ReplaceIdleStages(stages("bat"))));
     }
 
     #[test]
