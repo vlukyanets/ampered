@@ -20,6 +20,7 @@
     - `display.rs` — DPMS backends; `wlr` goes through `idle::IdleHandle`
     - `backlight.rs` — the sysfs backlight Controller
     - `logind.rs` — the zbus login1 Client
+    - `logind_conf.rs` — `logind.conf` + drop-ins, read for the lid-switch and IdleAction checks
     - `notify.rs` — `sd_notify` over `NOTIFY_SOCKET`, no libsystemd
     - `ipc.rs` — the NDJSON server + `Request`/`Response` types
     - `power/`

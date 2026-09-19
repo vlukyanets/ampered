@@ -68,7 +68,7 @@ ACTION=="add", SUBSYSTEM=="leds", KERNEL=="*::kbd_backlight", RUN+="/bin/chgrp v
 
 ## Checklist for the server scenario
 
-- [ ] `logind.conf`: `HandleLidSwitch*=ignore`, `IdleAction=ignore`
+- [ ] `logind.conf`: `HandleLidSwitch*=ignore`, `IdleAction=ignore` — `amperedctl status` reports `lid-switch` / `idle-action` in `degraded` otherwise
 - [ ] PPD/TLP disabled
 - [ ] `cat /sys/class/rtc/rtc0/wakealarm` exists; `.../device/power/wakeup` = `enabled`
 - [ ] Hibernate configured, if `critical_action = "hibernate"` (`systemctl hibernate` works manually)

@@ -28,7 +28,7 @@ The checked items are implemented. Tests: `config`, `core`, `backlight` and
 ## v0.3 — "security and reach"
 - [ ] Split mode: `ampered-agent` + polkit
 - [ ] `mutter` idle backend (GNOME)
-- [ ] Check `logind.conf` for `HandleLidSwitch` in server mode
+- [x] Check `logind.conf` for `HandleLidSwitch` in server mode, and `IdleAction` always
 - [ ] Packages: AUR, nix flake
 
 ## Later / undecided

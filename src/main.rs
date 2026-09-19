@@ -4,7 +4,7 @@
 //! crate (ADR-2): everything the engine decides is executed here, and
 //! nothing here decides anything.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -20,6 +20,7 @@ use ampered::display::Display;
 use ampered::idle::{self, IdleHandle};
 use ampered::ipc::{self, RequestId, Response, StateEvent, StatusData};
 use ampered::logind::{self, IdleFallback, LogindHandle, SavedState, SharedFallback, SharedState};
+use ampered::logind_conf;
 use ampered::notify::Notifier;
 use ampered::power::modes::{self, ModeApplier, SysfsModeSink};
 use ampered::power::supply::{self, FakePowerSource, SupplyHandle, SysfsPowerSource};
@@ -152,6 +153,7 @@ async fn run(cli: Cli, config: Config, notifier: Notifier) -> Result<()> {
         error!("no usable RTC alarm; long sleep is disabled");
         degraded.push("rtc".into());
     }
+    degraded.extend(logind_conf::check(Path::new("/"), config.server.enabled));
 
     let mut daemon = Daemon {
         config_path: cli.config.clone(),
@@ -475,6 +477,11 @@ impl Daemon {
         if config.server != self.config.server {
             self.rtc = rtc_for(&config);
             self.mark_degraded("rtc", config.server.enabled && self.rtc.is_none());
+        }
+        // The admin may have fixed logind.conf in the meantime.
+        let conf = logind_conf::check(Path::new("/"), config.server.enabled);
+        for entry in ["lid-switch", "idle-action"] {
+            self.mark_degraded(entry, conf.iter().any(|found| found == entry));
         }
         ampered::locked(&self.fallback).enabled =
             config.idle.fallback == IdleFallbackConfig::Logind;

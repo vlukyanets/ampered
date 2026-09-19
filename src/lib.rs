@@ -11,6 +11,7 @@ pub mod display;
 pub mod idle;
 pub mod ipc;
 pub mod logind;
+pub mod logind_conf;
 pub mod notify;
 pub mod power;
 pub mod sleep;

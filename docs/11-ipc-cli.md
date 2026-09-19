@@ -50,8 +50,11 @@ Exception — `subscribe`: a stream of events until the client disconnects.
 }
 ```
 
-`degraded` — a list of subsystems that are `unavailable`: `"wayland"`,
-`"backlight"`, `"logind"`, `"hibernate"`, `"rtc"`, `"conflict:tlp"`.
+`degraded` — a list of subsystems that are `unavailable`, and of
+configuration that works against ampered: `"wayland"`, `"backlight"`,
+`"display"`, `"logind"`, `"hibernate"`, `"rtc"`, `"conflict:tlp"`,
+`"lid-switch"`, `"idle-action"` (the last two from `logind.conf`,
+`09-sleep-logind.md`).
 
 ### `subscribe`
 
