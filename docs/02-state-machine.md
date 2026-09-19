@@ -39,6 +39,7 @@ enum Event {
     Timer(TimerId),               // Grace | SleepRetry | AwakeWindow | InhibitExpiry(id)
     Ipc(RequestId, Request),
     IdleBackendChanged(bool),     // compositor connected/lost
+    HibernateAvailable(bool),     // logind's and the kernel's verdict at startup
     Inhibitors(Vec<Inhibitor>),   // refreshed logind view (ADR-11)
     SleepBlocked(Vec<Inhibitor>), // a suspend attempt was refused (ADR-11)
     WakeScheduled(bool),          // the RTC alarm for ScheduleWake is armed, or not (ADR-13)

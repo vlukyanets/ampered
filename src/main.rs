@@ -162,6 +162,11 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
 
     let mut engine = Engine::new(config.clone(), initial.clone());
     let mut commands = engine.start();
+    let hibernate = daemon
+        .logind
+        .as_ref()
+        .is_some_and(LogindHandle::hibernate_available);
+    commands.extend(engine.handle(Event::HibernateAvailable(hibernate)));
     // Restarted in the middle of the cycle, still without power: carry on
     // from `Checking` (`docs/10-long-sleep-rtc.md`).
     if config.server.enabled

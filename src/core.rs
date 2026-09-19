@@ -198,6 +198,8 @@ pub enum Event {
     Ipc(RequestId, Request),
     /// The compositor connected or was lost.
     IdleBackendChanged(bool),
+    /// Whether logind and the kernel can hibernate (`docs/09-sleep-logind.md`).
+    HibernateAvailable(bool),
     /// Refreshed view of logind's blocking inhibitors (ADR-11).
     Inhibitors(Vec<Inhibitor>),
     /// A suspend attempt was refused because of inhibitors (ADR-11).
@@ -252,6 +254,8 @@ pub struct Engine {
     /// Where to go back to if the suspend we asked for does not happen.
     suspend_from: State,
     idle_connected: bool,
+    /// Until told otherwise, assume the critical action can hibernate.
+    hibernate_available: bool,
     /// Attempts of the server cycle that did not end in a suspend.
     sleep_failures: u8,
     /// The last cycle ended because the user woke the machine; shown in
@@ -276,6 +280,7 @@ impl Engine {
             pending_sleep: false,
             suspend_from: State::Active,
             idle_connected: false,
+            hibernate_available: true,
             sleep_failures: 0,
             interrupted: false,
         };
@@ -386,6 +391,13 @@ impl Engine {
             Event::Ipc(id, request) => self.on_ipc(id, request),
             Event::IdleBackendChanged(connected) => {
                 self.idle_connected = connected;
+                Vec::new()
+            }
+            Event::HibernateAvailable(available) => {
+                self.hibernate_available = available;
+                if !available && self.config.server.critical_action == CriticalAction::Hibernate {
+                    warn!("hibernate is unavailable; the critical action degrades to poweroff");
+                }
                 Vec::new()
             }
             Event::Inhibitors(list) => {
@@ -664,11 +676,12 @@ impl Engine {
                 next_wake: None,
             }));
             commands.push(match self.config.server.critical_action {
-                CriticalAction::Hibernate => Command::Suspend {
+                CriticalAction::Hibernate if self.hibernate_available => Command::Suspend {
                     method: SleepMethod::Hibernate,
                     force: true,
                 },
-                CriticalAction::Poweroff => Command::PowerOff,
+                // A plain suspend would keep draining the battery.
+                CriticalAction::Hibernate | CriticalAction::Poweroff => Command::PowerOff,
             });
         }
         // The window also covers a critical action that does not happen:
@@ -1291,6 +1304,7 @@ mod tests {
             ),
             // Bookkeeping events produce nothing on their own.
             (Active, Event::IdleBackendChanged(false), Active, vec![]),
+            (Active, Event::HibernateAvailable(false), Active, vec![]),
             (
                 Active,
                 Event::Inhibitors(vec![inhibitor("x")]),
@@ -2215,6 +2229,16 @@ mod tests {
             effects(engine.handle(Event::Timer(TimerId::AwakeWindow))),
             vec![Command::ScheduleWake(CHECK_INTERVAL)]
         );
+    }
+
+    #[test]
+    fn critical_hibernate_degrades_to_poweroff() {
+        let mut engine = server_in(Phase::Sleeping);
+        engine.handle(Event::HibernateAvailable(false));
+        engine.handle(Event::Battery(5));
+        let commands = engine.handle(Event::Resumed);
+        assert_eq!(commands[0], phase("critical"));
+        assert_eq!(commands[1], Command::PowerOff);
     }
 
     #[test]

@@ -19,8 +19,8 @@ The checked items are implemented. Tests: `config`, `core`, `backlight` and
 - [ ] `[idle] fallback = "logind"` (coarse `IdleHint` polling)
 - [x] `sleep::rtc` (`wakealarm`, `rtcwake`), `Command::ScheduleWake`, `next_wake` in status
 - [x] `sleep::planner`: the full cycle, `classify_wake`, `resume_hook`, `amperedctl long-sleep`
-- [ ] Hibernate checks at startup
-- [ ] udev netlink for `power_supply`
+- [x] Hibernate checks at startup: `critical_action = "hibernate"` degrades to `poweroff`
+- [x] udev netlink for `power_supply` (landed in v0.1, ADR-12)
 - [ ] `display` `wlr` backend
 - [ ] `sd_notify` → `Type=notify`
 - [ ] Persist manual mode (ADR-10)

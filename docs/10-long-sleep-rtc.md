@@ -137,6 +137,9 @@ equivalent, differing only in how the alarm gets written. Requires `util-linux`.
 - `hibernate` requires configured swap and `resume=`; checks are in
   `09-sleep-logind.md`. If unavailable, it degrades to `poweroff` with a
   `warn!` at startup (better to find out at startup than at 10% battery).
+  The daemon tells the FSM with `Event::HibernateAvailable(false)`, and the
+  critical action becomes `PowerOff` — never the plain suspend that
+  `[sleep] method` falls back to, which would keep draining the battery.
 - `poweroff` — `logind.PowerOff(false)`.
 
 Before the critical action, `RunHook(resume_hook)` is not called, but
