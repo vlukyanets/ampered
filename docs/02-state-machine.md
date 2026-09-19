@@ -109,5 +109,6 @@ The full set of `LongSleep` transitions is in `10-long-sleep-rtc.md`.
 
 ## Testing
 
-Table-driven tests: each row of the table above is one `#[test]` or one
-row in `TRANSITIONS: &[(State, Event, State, &[Command])]`. See `15-testing.md`.
+Table-driven tests: each row of the table above is one row in the
+`transitions()` table of `(State, Event, State, Vec<Command>)` in
+`src/core.rs`; rows with a condition are scenario tests. See `15-testing.md`.
