@@ -26,6 +26,7 @@ pub const INHIBITOR_POLL: Duration = Duration::from_secs(30);
 pub const IDLE_HINT_POLL: Duration = Duration::from_secs(30);
 
 const STATE_FILE: &str = "state.json";
+const MODE_FILE: &str = "mode";
 const DEFAULT_STATE_DIR: &str = "/var/lib/ampered";
 
 #[zbus::proxy(
@@ -89,6 +90,33 @@ pub struct SavedState {
 impl SavedState {
     pub fn in_long_sleep(&self) -> bool {
         self.state.starts_with("LongSleep")
+    }
+}
+
+/// The manual mode a previous run left behind (ADR-15).
+pub fn load_manual_mode() -> Option<String> {
+    let name = std::fs::read_to_string(state_dir().join(MODE_FILE)).ok()?;
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Writes the manual mode, or removes the file for auto.
+pub fn save_manual_mode(name: Option<&str>) {
+    let path = state_dir().join(MODE_FILE);
+    let result = match name {
+        Some(name) => {
+            let _ = std::fs::create_dir_all(state_dir());
+            std::fs::write(&path, format!("{name}\n"))
+        }
+        None => match std::fs::remove_file(&path) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        },
+    };
+    match result {
+        Ok(()) => debug!(path = %path.display(), ?name, "manual mode saved"),
+        // Not fatal: the mode is in effect either way.
+        Err(err) => warn!(path = %path.display(), %err, "cannot save the manual mode"),
     }
 }
 
@@ -285,11 +313,14 @@ async fn take_delay_lock(manager: &ManagerProxy<'_>) -> Option<OwnedFd> {
     }
 }
 
-fn state_path() -> PathBuf {
-    let dir = std::env::var_os("STATE_DIRECTORY")
+fn state_dir() -> PathBuf {
+    std::env::var_os("STATE_DIRECTORY")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_STATE_DIR));
-    dir.join(STATE_FILE)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_STATE_DIR))
+}
+
+fn state_path() -> PathBuf {
+    state_dir().join(STATE_FILE)
 }
 
 fn write_state(path: &PathBuf, saved: &SharedState) {

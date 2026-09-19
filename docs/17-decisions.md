@@ -54,7 +54,7 @@ a negligible probability.
 ## ADR-10 — Manual mode doesn't survive a restart
 **2026-09.** Reason: no persistence store in v0.1; `state.json` is only
 for sleep. Consequences: after `systemctl restart`, it's back to auto.
-Revisit in v0.2.
+Revisit in v0.2. *Superseded by ADR-15.*
 
 ## ADR-11 — Inhibitors reach the FSM as events, and are re-checked on the way out
 **2026-09.** logind has no "inhibitors changed" signal, and `ListInhibitors()`
@@ -99,3 +99,12 @@ tree that exists for a single function. Consequences: `READY`, `RELOADING`,
 `STOPPING`, `STATUS` and `WATCHDOG` are the entire vocabulary we speak;
 `MONOTONIC_USEC` for `Type=notify-reload` is not sent, so the unit stays
 `Type=notify` with `ExecReload`.
+
+## ADR-15 — Manual mode is persisted as one file
+**2026-09.** Supersedes ADR-10. `$STATE_DIRECTORY/mode` holds the name of
+the manual mode; it is written on `amperedctl mode <name>`, removed on
+`amperedctl mode auto`, and read once at startup. Reason: a user who chose
+`performance` before a reboot did not choose `balanced` after it, and one
+name in one file needs no store. Consequences: `state.json` stays the
+sleep-only file it was; a name missing from the reloaded config is dropped
+with a `warn!`, never applied blindly.

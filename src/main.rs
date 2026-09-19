@@ -15,7 +15,7 @@ use tracing::{debug, error, info, warn};
 
 use ampered::backlight::Controller as Backlight;
 use ampered::config::{Config, IdleFallback as IdleFallbackConfig};
-use ampered::core::{Command, Engine, Event, Phase, State, TimerId};
+use ampered::core::{Command, Engine, Event, ModeSelection, Phase, State, TimerId};
 use ampered::display::Display;
 use ampered::idle::{self, IdleHandle};
 use ampered::ipc::{self, RequestId, Response, StateEvent, StatusData};
@@ -175,6 +175,11 @@ async fn run(cli: Cli, config: Config, notifier: Notifier) -> Result<()> {
     };
 
     let mut engine = Engine::new(config.clone(), initial.clone());
+    if let Some(name) = logind::load_manual_mode()
+        && !engine.restore_manual_mode(&name)
+    {
+        logind::save_manual_mode(None);
+    }
     let mut commands = engine.start();
     let hibernate = daemon
         .logind
@@ -350,6 +355,14 @@ impl Daemon {
                 ),
             },
             Command::Reply(id, response) => self.reply(id, response),
+            Command::Broadcast(StateEvent::Mode { name }) => {
+                // Only a choice by the user is worth keeping (ADR-15).
+                logind::save_manual_mode(match engine.mode() {
+                    ModeSelection::Manual(_) => Some(name.as_str()),
+                    ModeSelection::Auto(_) => None,
+                });
+                self.server.broadcast(StateEvent::Mode { name });
+            }
             Command::Broadcast(StateEvent::LongSleep { phase, .. }) => {
                 let next_wake = self.next_wake();
                 self.server

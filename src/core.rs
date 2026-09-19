@@ -294,6 +294,21 @@ impl Engine {
         self.mode_commands()
     }
 
+    /// The manual mode saved by a previous run (ADR-15), before `start`.
+    /// A name the config no longer has is refused, and auto stays in charge.
+    pub fn restore_manual_mode(&mut self, name: &str) -> bool {
+        if !self.config.modes.contains_key(name) {
+            warn!(
+                mode = name,
+                "saved manual mode is not in the config, ignoring it"
+            );
+            return false;
+        }
+        info!(mode = name, "manual mode restored");
+        self.mode = ModeSelection::Manual(name.to_string());
+        true
+    }
+
     pub fn state(&self) -> State {
         self.state
     }
@@ -1380,6 +1395,23 @@ mod tests {
         );
         // No change, no broadcast.
         assert_eq!(engine.handle(Event::Activity), vec![]);
+    }
+
+    #[test]
+    fn restore_manual_mode_before_start() {
+        let mut engine = fresh();
+        assert!(engine.restore_manual_mode("bat"));
+        assert_eq!(engine.mode(), &ModeSelection::Manual("bat".into()));
+        assert_eq!(engine.start()[0], Command::ApplyMode("bat".into()));
+        // Manual: the power source no longer matters.
+        assert_eq!(
+            engine.handle(Event::AcChanged(false)),
+            vec![Command::Broadcast(StateEvent::Power { ac: false })]
+        );
+
+        let mut engine = fresh();
+        assert!(!engine.restore_manual_mode("turbo"));
+        assert_eq!(engine.mode(), &ModeSelection::Auto("ac".into()));
     }
 
     #[test]

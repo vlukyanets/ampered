@@ -23,7 +23,7 @@ The checked items are implemented. Tests: `config`, `core`, `backlight` and
 - [x] udev netlink for `power_supply` (landed in v0.1, ADR-12)
 - [x] `display` `wlr` backend
 - [x] `sd_notify` → `Type=notify`, `WatchdogSec`
-- [ ] Persist manual mode (ADR-10)
+- [x] Persist manual mode (ADR-15)
 
 ## v0.3 — "security and reach"
 - [ ] Split mode: `ampered-agent` + polkit

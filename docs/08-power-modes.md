@@ -46,7 +46,11 @@ while AC is online, `on_battery` while on battery and not low, and
   is applied; after that only `amperedctl mode <name>` changes it.
 - `amperedctl mode <name>` → `Manual(name)`: auto-switching is disabled.
 - `amperedctl mode auto` → `Auto`, immediate recalculation.
-- `Manual` **does not survive** a daemon restart (no persisted state in v0.1).
+- `Manual` survives a daemon restart (ADR-15): the name is written to
+  `$STATE_DIRECTORY/mode` on `amperedctl mode <name>` and the file is
+  removed on `amperedctl mode auto`. At startup a saved name that is still
+  in `[modes]` is applied as `Manual`; one that is not is dropped with a
+  `warn!` and auto-switching takes over.
 - Changing mode means `Command::ApplyMode` + `Command::ReplaceIdleStages`.
 
 ## Conflicts with other daemons
