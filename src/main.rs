@@ -20,6 +20,7 @@ use ampered::display::Display;
 use ampered::idle::{self, IdleHandle};
 use ampered::ipc::{self, RequestId, Response, StateEvent, StatusData};
 use ampered::logind::{self, IdleFallback, LogindHandle, SavedState, SharedFallback, SharedState};
+use ampered::notify::Notifier;
 use ampered::power::modes::{self, ModeApplier, SysfsModeSink};
 use ampered::power::supply::{self, FakePowerSource, SupplyHandle, SysfsPowerSource};
 use ampered::power::{PowerSnapshot, PowerSource};
@@ -65,11 +66,13 @@ fn main() -> Result<()> {
     }
 
     init_logging(&config.general.log_level);
+    // Before the runtime: it edits the environment (`notify.rs`).
+    let notifier = Notifier::from_env();
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run(cli, config))
+        .block_on(run(cli, config, notifier))
 }
 
 /// `RUST_LOG` takes priority over `[general] log_level` (`docs/12-configuration.md`).
@@ -82,7 +85,7 @@ fn init_logging(log_level: &str) {
         .init();
 }
 
-async fn run(cli: Cli, config: Config) -> Result<()> {
+async fn run(cli: Cli, config: Config, notifier: Notifier) -> Result<()> {
     let config = Arc::new(config);
     let socket = cli
         .socket
@@ -166,6 +169,8 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
         fallback,
         rtc,
         planner: Planner::default(),
+        notifier,
+        last_status: String::new(),
         degraded,
     };
 
@@ -187,6 +192,9 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
     daemon.remember(&engine);
 
     info!(version = env!("CARGO_PKG_VERSION"), "ampered started");
+    daemon.notifier.ready();
+    daemon.notifier.spawn_watchdog();
+    daemon.report(&engine);
 
     loop {
         let mut queue: std::collections::VecDeque<_> = commands.drain(..).collect();
@@ -194,6 +202,7 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
             match daemon.execute(command, &mut engine).await {
                 Outcome::Continue(more) => queue.extend(more),
                 Outcome::Shutdown => {
+                    daemon.notifier.stopping();
                     // The undim must finish before the process does.
                     daemon.backlight.settle().await;
                     daemon.cleanup();
@@ -227,6 +236,7 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
             commands.extend(daemon.classify_wake(&mut engine));
         }
         daemon.remember(&engine);
+        daemon.report(&engine);
     }
 }
 
@@ -251,6 +261,9 @@ struct Daemon {
     fallback: SharedFallback,
     rtc: Option<Box<dyn RtcAlarm>>,
     planner: Planner,
+    notifier: Notifier,
+    /// The last `STATUS=` line sent, so unchanged states send nothing.
+    last_status: String,
     degraded: Vec<String>,
 }
 
@@ -416,10 +429,12 @@ impl Daemon {
     /// A rejected config leaves everything as it was (`docs/12-configuration.md`).
     async fn reload(&mut self, reply_to: Option<RequestId>, engine: &mut Engine) -> Vec<Command> {
         info!(path = %self.config_path.display(), "reloading config");
+        self.notifier.reloading();
         let config = match Config::load(&self.config_path) {
             Ok(config) => config,
             Err(err) => {
                 error!(%err, "config rejected, keeping the previous one");
+                self.notifier.ready();
                 if let Some(id) = reply_to {
                     self.server.reply(id, Response::error(err.to_string()));
                 }
@@ -454,10 +469,29 @@ impl Daemon {
         let config = Arc::new(config);
         self.config = config.clone();
         let mut commands = engine.set_config(config);
+        self.notifier.ready();
         if let Some(id) = reply_to {
             commands.push(Command::Reply(id, Response::Ok));
         }
         commands
+    }
+
+    /// One line for `systemctl status`, kept current as the state moves.
+    fn report(&mut self, engine: &Engine) {
+        if !self.notifier.is_active() {
+            return;
+        }
+        let mode = engine.mode();
+        let status = format!(
+            "{}, mode {} ({})",
+            engine.state(),
+            mode.name(),
+            mode.source()
+        );
+        if status != self.last_status {
+            self.notifier.status(&status);
+            self.last_status = status;
+        }
     }
 
     /// Keeps `state.json` ready: the delay lock gives us only a few seconds

@@ -90,3 +90,12 @@ Consequences: a wake by the user passes through `Checking` for one event,
 with a `StartTimer`/`CancelTimer` pair; one round trip between
 `ScheduleWake` and `Suspend`, which is what keeps a machine from sleeping in
 the cycle with no alarm armed.
+
+## ADR-14 — `sd_notify` by hand, no `sd-notify` crate
+**2026-09.** `notify.rs` sends the `KEY=VALUE` datagram to `NOTIFY_SOCKET`
+itself (path or abstract name) with `std::os::unix::net`. Reason: the whole
+protocol is one `sendto`, and the crate would be the only dependency in the
+tree that exists for a single function. Consequences: `READY`, `RELOADING`,
+`STOPPING`, `STATUS` and `WATCHDOG` are the entire vocabulary we speak;
+`MONOTONIC_USEC` for `Type=notify-reload` is not sent, so the unit stays
+`Type=notify` with `ExecReload`.

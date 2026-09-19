@@ -13,7 +13,7 @@ The checked items are implemented. Tests: `config`, `core`, `backlight` and
 - [x] `idle`: `ext-idle-notify-v1` with reconnect
 - [x] `logind`: suspend, inhibitors, delay lock, `state.json`
 - [x] `display`: `command` backend
-- [x] `contrib/ampered.service` with `Type=simple`
+- [x] `contrib/ampered.service`
 
 ## v0.2 — "server"
 - [x] `[idle] fallback = "logind"` (coarse `IdleHint` polling)
@@ -22,7 +22,7 @@ The checked items are implemented. Tests: `config`, `core`, `backlight` and
 - [x] Hibernate checks at startup: `critical_action = "hibernate"` degrades to `poweroff`
 - [x] udev netlink for `power_supply` (landed in v0.1, ADR-12)
 - [x] `display` `wlr` backend
-- [ ] `sd_notify` → `Type=notify`
+- [x] `sd_notify` → `Type=notify`, `WatchdogSec`
 - [ ] Persist manual mode (ADR-10)
 
 ## v0.3 — "security and reach"
