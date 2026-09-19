@@ -334,7 +334,7 @@ fn write_state(path: &PathBuf, saved: &SharedState) {
     }
     match std::fs::write(path, text) {
         Ok(()) => debug!(path = %path.display(), state = state.state, "state saved"),
-        // Not fatal: only the v0.2 wake classifier needs this file.
+        // Not fatal: only a restart in the middle of the cycle reads it.
         Err(err) => debug!(path = %path.display(), %err, "cannot save state"),
     }
 }

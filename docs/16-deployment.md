@@ -78,4 +78,4 @@ ACTION=="add", SUBSYSTEM=="leds", KERNEL=="*::kbd_backlight", RUN+="/bin/chgrp v
 
 ## Distribution packages
 
-Packaging (AUR, nix, deb) comes after v0.2. For now, `cargo install --path .`.
+Packaging (AUR, nix, deb) is v0.3. For now, `cargo install --path .`.

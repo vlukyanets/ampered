@@ -307,7 +307,7 @@ impl fmt::Display for SleepMethod {
 }
 
 /// The long-sleep server cycle (`docs/10-long-sleep-rtc.md`). Parsed and
-/// validated in v0.1, acted upon from v0.2 on.
+/// validated here, driven by `core` and `sleep`.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]
 pub struct Server {

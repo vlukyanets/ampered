@@ -29,7 +29,7 @@ pub enum State {
     Suspending,
     /// Between `PrepareForSleep(true)` and `PrepareForSleep(false)`.
     Sleeping,
-    /// The server cycle; driven from v0.2 on (`docs/10-long-sleep-rtc.md`).
+    /// The server cycle (`docs/10-long-sleep-rtc.md`).
     LongSleep(Phase),
 }
 
@@ -1182,7 +1182,7 @@ mod tests {
                 Event::Idle(Stage::Sleep),
                 Event::Suspending,
             ],
-            State::LongSleep(_) => unreachable!("the server cycle lands in v0.2"),
+            State::LongSleep(_) => unreachable!("use server_in for the cycle"),
         };
         for event in path {
             engine.handle(event.clone());
