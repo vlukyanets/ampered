@@ -40,7 +40,7 @@ Unknown keys are an error (`deny_unknown_fields`).
 | Key | Default | Description |
 |---|---|---|
 | `backend` | `"wlr"` | `wlr` / `command` / `none`, see `docs/06-display-dpms.md` |
-| `off_command`, `on_command` | — | For `command`; both are required with that backend |
+| `off_command`, `on_command` | — | For `command`, where both are required. With `wlr` they are the fallback for a compositor without the protocol (`docs/06-display-dpms.md`); either both or neither |
 
 ## `[modes.<name>]`
 

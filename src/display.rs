@@ -26,8 +26,15 @@ pub struct Display {
 }
 
 enum Backend {
-    Wlr(IdleHandle),
-    Command { off: String, on: String },
+    /// The protocol when the compositor has it, the commands when it does not.
+    Wlr {
+        idle: IdleHandle,
+        fallback: Option<(String, String)>,
+    },
+    Command {
+        off: String,
+        on: String,
+    },
     None,
 }
 
@@ -61,8 +68,17 @@ impl Display {
                 Backend::None
             }
             DisplayBackend::Wlr => {
-                info!("display backend: wlr-output-power-management");
-                Backend::Wlr(idle)
+                // Validation guarantees the pair is complete or absent.
+                let fallback = config
+                    .display
+                    .off_command
+                    .clone()
+                    .zip(config.display.on_command.clone());
+                info!(
+                    fallback = fallback.is_some(),
+                    "display backend: wlr-output-power-management"
+                );
+                Backend::Wlr { idle, fallback }
             }
         };
         Display {
@@ -73,10 +89,10 @@ impl Display {
     }
 
     /// For `wlr` this follows the compositor: gone with the connection,
-    /// back with it.
+    /// back with it — unless the commands stand in.
     pub fn is_available(&self) -> bool {
         match &self.backend {
-            Backend::Wlr(idle) => idle.output_power_available(),
+            Backend::Wlr { idle, fallback } => idle.output_power_available() || fallback.is_some(),
             Backend::Command { .. } => true,
             Backend::None => false,
         }
@@ -91,10 +107,23 @@ impl Display {
         }
 
         let command = match &self.backend {
-            Backend::Wlr(idle) => {
-                idle.set_screen(on);
-                self.last = Some(on);
-                return;
+            Backend::Wlr { idle, fallback } => {
+                if idle.output_power_available() {
+                    idle.set_screen(on);
+                    self.last = Some(on);
+                    return;
+                }
+                match fallback {
+                    Some((off, on_cmd)) => {
+                        debug!("no output power protocol, using the command fallback");
+                        Some(if on { on_cmd.clone() } else { off.clone() })
+                    }
+                    None => {
+                        idle.set_screen(on);
+                        self.last = Some(on);
+                        return;
+                    }
+                }
             }
             Backend::None => None,
             Backend::Command { off, on: on_cmd } => {

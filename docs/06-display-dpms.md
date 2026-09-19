@@ -17,14 +17,19 @@ events: mode(current), failed
 - Shares the Wayland connection with `idle::Watcher` (one `Connection`, one
   `EventQueue`): the client lives in `idle.rs`, `display.rs` sends it
   `Screen` through `IdleHandle`.
-- No `zwlr_output_power_manager_v1` in the registry → `warn!` on the first
-  `Screen(*)` and `degraded: ["display"]` for as long as the compositor
-  lacks it; the screen state is left alone.
+- No `zwlr_output_power_manager_v1` in the registry: with `off_command`
+  and `on_command` configured next to `backend = "wlr"`, they take over
+  (the `command` backend below, same rules); without them `warn!` on the
+  first `Screen(*)`, `degraded: ["display"]` for as long as the compositor
+  lacks the global, and the screen state is left alone. The registry is
+  the check: a compositor advertises the global or it does not, so the
+  fallback follows a compositor restart too.
 
 Support: wlroots compositors (Sway, river, labwc), Hyprland. **Not** niri
-(it offers `wlr-output-management`, a different protocol — use `command`
-with `niri msg action power-off-monitors` / `power-on-monitors`), not
-KWin, not Mutter.
+(it offers `wlr-output-management`, a different protocol — keep
+`backend = "wlr"` with `niri msg action power-off-monitors` /
+`power-on-monitors` as the fallback, or use `command`), not KWin, not
+Mutter.
 
 ## `command` backend
 
