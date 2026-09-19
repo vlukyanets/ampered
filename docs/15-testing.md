@@ -1,10 +1,10 @@
 # 15 — Testing
 
-> **Status:** the `config`, `core`, `backlight` and `power::supply` suites
-> are in the tree. They touch nothing outside the process: no real sysfs,
+> **Status:** the `config`, `core`, `backlight`, `power::supply` and
+> `sleep::rtc` suites are in the tree. They touch nothing outside the process: no real sysfs,
 > no sockets, no D-Bus, no subprocesses — the backlight and power supply
-> tests run against a tempdir laid out like sysfs, and the FSM tests compare
-> `Command` values. Of the FSM scenarios below, 6 and 7 wait for the server
+> tests run against a tempdir laid out like sysfs, the RTC tests against an
+> in-memory `wakealarm`, and the FSM tests compare `Command` values. Of the FSM scenarios below, 6 and 7 wait for the server
 > cycle (v0.2); the `display`, `ipc` and `timers` suites are not written yet.
 > What follows describes the full intended suite.
 

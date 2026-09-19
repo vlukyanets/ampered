@@ -23,6 +23,7 @@ use ampered::logind::{self, LogindHandle, SavedState, SharedState};
 use ampered::power::modes::{self, ModeApplier, SysfsModeSink};
 use ampered::power::supply::{self, FakePowerSource, SupplyHandle, SysfsPowerSource};
 use ampered::power::{PowerSnapshot, PowerSource};
+use ampered::sleep::rtc::{self, RtcAlarm};
 use ampered::timers::Timers;
 
 const DEFAULT_CONFIG: &str = "/etc/ampered/ampered.toml";
@@ -134,6 +135,12 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
         None => degraded.push("logind".into()),
     }
 
+    let rtc = rtc_for(&config);
+    if config.server.enabled && rtc.is_none() {
+        error!("no usable RTC alarm; long sleep is disabled");
+        degraded.push("rtc".into());
+    }
+
     let mut daemon = Daemon {
         config_path: cli.config.clone(),
         config: config.clone(),
@@ -147,6 +154,7 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
         logind,
         saved,
         supply,
+        rtc,
         degraded,
     };
 
@@ -206,7 +214,16 @@ struct Daemon {
     logind: Option<LogindHandle>,
     saved: SharedState,
     supply: SupplyHandle,
+    rtc: Option<Box<dyn RtcAlarm>>,
     degraded: Vec<String>,
+}
+
+/// The RTC is only touched when the server cycle can use it.
+fn rtc_for(config: &Config) -> Option<Box<dyn RtcAlarm>> {
+    if !config.server.enabled {
+        return None;
+    }
+    rtc::from_config(&config.server)
 }
 
 impl Daemon {
@@ -229,6 +246,14 @@ impl Daemon {
                     return Outcome::Continue(engine.handle(Event::Activity));
                 }
             }
+            Command::ScheduleWake(at) => match &self.rtc {
+                Some(rtc) => {
+                    if let Err(err) = rtc.set(at) {
+                        error!(%err, at = %humantime::format_rfc3339_seconds(at), "cannot arm the RTC alarm");
+                    }
+                }
+                None => error!("no RTC alarm, the wake cannot be scheduled"),
+            },
             Command::Screen(on) => self.display.set(on).await,
             Command::Dim(percent) => self.backlight.dim_to(percent).await,
             Command::Undim => self.backlight.restore().await,
@@ -273,6 +298,11 @@ impl Daemon {
         if !status.idle.connected {
             status.degraded.push("wayland".into());
         }
+        status.server.next_wake = self
+            .rtc
+            .as_ref()
+            .and_then(|rtc| rtc.pending().ok().flatten())
+            .map(|at| humantime::format_rfc3339_seconds(at).to_string());
         for inhibitor in &mut status.inhibitors {
             inhibitor.expires = self
                 .timers
@@ -312,6 +342,10 @@ impl Daemon {
         if config.display != self.config.display {
             self.display = Display::from_config(&config);
             self.mark_degraded("display", !self.display.is_available());
+        }
+        if config.server != self.config.server {
+            self.rtc = rtc_for(&config);
+            self.mark_degraded("rtc", config.server.enabled && self.rtc.is_none());
         }
 
         let config = Arc::new(config);
