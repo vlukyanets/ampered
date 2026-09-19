@@ -14,12 +14,12 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use ampered::backlight::Controller as Backlight;
-use ampered::config::{Config, IdleFallback};
+use ampered::config::{Config, IdleFallback as IdleFallbackConfig};
 use ampered::core::{Command, Engine, Event, Phase, State, TimerId};
 use ampered::display::Display;
 use ampered::idle::{self, IdleHandle};
 use ampered::ipc::{self, RequestId, Response, StateEvent, StatusData};
-use ampered::logind::{self, LogindHandle, SavedState, SharedState};
+use ampered::logind::{self, IdleFallback, LogindHandle, SavedState, SharedFallback, SharedState};
 use ampered::power::modes::{self, ModeApplier, SysfsModeSink};
 use ampered::power::supply::{self, FakePowerSource, SupplyHandle, SysfsPowerSource};
 use ampered::power::{PowerSnapshot, PowerSource};
@@ -124,12 +124,23 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
     info!(ac = initial.ac, battery = ?initial.battery, "power at startup");
     let supply = supply::spawn(source, initial.clone(), events_tx.clone());
     let idle = idle::spawn(config.wayland.clone(), events_tx.clone());
-    if config.idle.fallback == IdleFallback::Logind {
-        warn!("[idle] fallback = \"logind\" is not implemented in v0.1; ext-idle-notify only");
-    }
+    let fallback: SharedFallback = Arc::new(std::sync::Mutex::new(IdleFallback {
+        enabled: config.idle.fallback == IdleFallbackConfig::Logind,
+        compositor: false,
+        sleep_after: None,
+    }));
 
     let saved: SharedState = Arc::new(std::sync::Mutex::new(SavedState::default()));
-    let logind = logind::connect(config.clone(), events_tx.clone(), saved.clone()).await;
+    let logind = logind::connect(
+        config.clone(),
+        events_tx.clone(),
+        saved.clone(),
+        fallback.clone(),
+    )
+    .await;
+    if config.idle.fallback == IdleFallbackConfig::Logind && logind.is_none() {
+        warn!("[idle] fallback = \"logind\" needs logind, which is unavailable");
+    }
     match &logind {
         Some(handle) if !handle.hibernate_available() => degraded.push("hibernate".into()),
         Some(_) => {}
@@ -155,6 +166,7 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
         logind,
         saved,
         supply,
+        fallback,
         rtc,
         planner: Planner::default(),
         degraded,
@@ -207,6 +219,9 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
                 daemon.supply.recheck_after_resume();
                 woke_in_cycle = engine.state() == State::LongSleep(Phase::Sleeping);
             }
+            Event::IdleBackendChanged(connected) => {
+                ampered::locked(&daemon.fallback).compositor = *connected;
+            }
             _ => {}
         }
         debug!(?event, "event");
@@ -236,6 +251,7 @@ struct Daemon {
     logind: Option<LogindHandle>,
     saved: SharedState,
     supply: SupplyHandle,
+    fallback: SharedFallback,
     rtc: Option<Box<dyn RtcAlarm>>,
     planner: Planner,
     degraded: Vec<String>,
@@ -254,7 +270,10 @@ impl Daemon {
         match command {
             Command::StartTimer(id, after) => self.timers.start(id, after),
             Command::CancelTimer(id) => self.timers.cancel(id),
-            Command::ReplaceIdleStages(stages) => self.idle.replace_stages(stages),
+            Command::ReplaceIdleStages(stages) => {
+                ampered::locked(&self.fallback).sleep_after = stages.sleep;
+                self.idle.replace_stages(stages);
+            }
             Command::Suspend { method, force } => {
                 let delivered = match &self.logind {
                     Some(logind) => logind.suspend(method, force),
@@ -380,6 +399,9 @@ impl Daemon {
         status.idle.backend = idle::BACKEND.to_string();
         if !status.idle.connected {
             status.degraded.push("wayland".into());
+            if ampered::locked(&self.fallback).engaged() {
+                status.idle.backend = "logind".to_string();
+            }
         }
         status.server.next_wake = self.next_wake();
         for inhibitor in &mut status.inhibitors {
@@ -426,6 +448,8 @@ impl Daemon {
             self.rtc = rtc_for(&config);
             self.mark_degraded("rtc", config.server.enabled && self.rtc.is_none());
         }
+        ampered::locked(&self.fallback).enabled =
+            config.idle.fallback == IdleFallbackConfig::Logind;
 
         let config = Arc::new(config);
         self.config = config.clone();

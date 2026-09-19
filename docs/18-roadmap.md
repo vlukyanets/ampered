@@ -16,7 +16,7 @@ The checked items are implemented. Tests: `config`, `core`, `backlight` and
 - [x] `contrib/ampered.service` with `Type=simple`
 
 ## v0.2 — "server"
-- [ ] `[idle] fallback = "logind"` (coarse `IdleHint` polling)
+- [x] `[idle] fallback = "logind"` (coarse `IdleHint` polling)
 - [x] `sleep::rtc` (`wakealarm`, `rtcwake`), `Command::ScheduleWake`, `next_wake` in status
 - [x] `sleep::planner`: the full cycle, `classify_wake`, `resume_hook`, `amperedctl long-sleep`
 - [x] Hibernate checks at startup: `critical_action = "hibernate"` degrades to `poweroff`
