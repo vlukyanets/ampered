@@ -15,13 +15,18 @@ use zbus::export::futures_core::Stream;
 use zbus::zvariant::OwnedFd;
 
 use crate::config::{Config, SleepMethod};
-use crate::core::{Event, Inhibitor};
+use crate::core::{Event, Inhibitor, Stage};
 
 /// logind has no "inhibitors changed" signal, so the cache is refreshed on a
 /// timer and re-checked at the moment of the suspend (ADR-11).
 pub const INHIBITOR_POLL: Duration = Duration::from_secs(30);
 
+/// `IdleHint` is coarse anyway; more often would only load the bus
+/// (`docs/04-idle-wayland.md`).
+pub const IDLE_HINT_POLL: Duration = Duration::from_secs(30);
+
 const STATE_FILE: &str = "state.json";
+const MODE_FILE: &str = "mode";
 const DEFAULT_STATE_DIR: &str = "/var/lib/ampered";
 
 #[zbus::proxy(
@@ -40,18 +45,92 @@ trait Manager {
     #[allow(clippy::type_complexity)]
     fn list_inhibitors(&self) -> zbus::Result<Vec<(String, String, String, String, u32, u32)>>;
 
+    #[zbus(property)]
+    fn idle_hint(&self) -> zbus::Result<bool>;
+    /// Microseconds since the epoch, `CLOCK_REALTIME`; `0` when not idle.
+    #[zbus(property)]
+    fn idle_since_hint(&self) -> zbus::Result<u64>;
+
     #[zbus(signal)]
     fn prepare_for_sleep(&self, start: bool) -> zbus::Result<()>;
 }
 
-/// What the daemon writes before going to sleep; v0.2 reads it back to
-/// classify the wake-up (`docs/10-long-sleep-rtc.md`).
+/// What the `IdleHint` poller needs from the daemon (`[idle] fallback`).
+#[derive(Debug, Clone, Default)]
+pub struct IdleFallback {
+    /// `[idle] fallback = "logind"`, live across reloads.
+    pub enabled: bool,
+    /// The compositor backend is connected, so the fallback stays out of it.
+    pub compositor: bool,
+    /// The current mode's `sleep_after`; `None` disables the stage.
+    pub sleep_after: Option<Duration>,
+}
+
+impl IdleFallback {
+    pub fn engaged(&self) -> bool {
+        self.enabled && !self.compositor
+    }
+}
+
+pub type SharedFallback = Arc<Mutex<IdleFallback>>;
+
+/// What the daemon writes before going to sleep, and reads back at startup
+/// to pick up an interrupted server cycle (`docs/10-long-sleep-rtc.md`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SavedState {
     pub state: String,
     pub mode: String,
+    /// `regular` or `long-sleep`.
     pub reason: String,
+    /// RFC 3339, the alarm armed for the long sleep.
+    pub scheduled_wake: Option<String>,
     pub saved_at: Option<String>,
+}
+
+impl SavedState {
+    pub fn in_long_sleep(&self) -> bool {
+        self.state.starts_with("LongSleep")
+    }
+}
+
+/// The manual mode a previous run left behind (ADR-15).
+pub fn load_manual_mode() -> Option<String> {
+    let name = std::fs::read_to_string(state_dir().join(MODE_FILE)).ok()?;
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Writes the manual mode, or removes the file for auto.
+pub fn save_manual_mode(name: Option<&str>) {
+    let path = state_dir().join(MODE_FILE);
+    let result = match name {
+        Some(name) => {
+            let _ = std::fs::create_dir_all(state_dir());
+            std::fs::write(&path, format!("{name}\n"))
+        }
+        None => match std::fs::remove_file(&path) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        },
+    };
+    match result {
+        Ok(()) => debug!(path = %path.display(), ?name, "manual mode saved"),
+        // Not fatal: the mode is in effect either way.
+        Err(err) => warn!(path = %path.display(), %err, "cannot save the manual mode"),
+    }
+}
+
+/// The state saved before the last sleep, if the file is there and readable.
+pub fn load_saved_state() -> Option<SavedState> {
+    let path = state_path();
+    let text = std::fs::read_to_string(&path).ok()?;
+    match serde_json::from_str(&text) {
+        Ok(state) => Some(state),
+        Err(err) => {
+            warn!(path = %path.display(), %err, "ignoring an unreadable state file");
+            None
+        }
+    }
 }
 
 pub type SharedState = Arc<Mutex<SavedState>>;
@@ -109,6 +188,7 @@ pub async fn connect(
     config: Arc<Config>,
     events: mpsc::Sender<Event>,
     saved: SharedState,
+    fallback: SharedFallback,
 ) -> Option<LogindHandle> {
     let connection = match zbus::Connection::system().await {
         Ok(connection) => connection,
@@ -138,6 +218,7 @@ pub async fn connect(
         state_path(),
     ));
     tokio::spawn(inhibitor_poll(manager.clone(), events.clone()));
+    tokio::spawn(idle_hint_poll(manager.clone(), events.clone(), fallback));
     tokio::spawn(executor(manager, config, events, requests_rx));
 
     info!("connected to logind");
@@ -232,11 +313,14 @@ async fn take_delay_lock(manager: &ManagerProxy<'_>) -> Option<OwnedFd> {
     }
 }
 
-fn state_path() -> PathBuf {
-    let dir = std::env::var_os("STATE_DIRECTORY")
+fn state_dir() -> PathBuf {
+    std::env::var_os("STATE_DIRECTORY")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_STATE_DIR));
-    dir.join(STATE_FILE)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_STATE_DIR))
+}
+
+fn state_path() -> PathBuf {
+    state_dir().join(STATE_FILE)
 }
 
 fn write_state(path: &PathBuf, saved: &SharedState) {
@@ -250,7 +334,7 @@ fn write_state(path: &PathBuf, saved: &SharedState) {
     }
     match std::fs::write(path, text) {
         Ok(()) => debug!(path = %path.display(), state = state.state, "state saved"),
-        // Not fatal: only the v0.2 wake classifier needs this file.
+        // Not fatal: only a restart in the middle of the cycle reads it.
         Err(err) => debug!(path = %path.display(), %err, "cannot save state"),
     }
 }
@@ -279,6 +363,69 @@ async fn blocking_inhibitors(manager: &ManagerProxy<'_>) -> Vec<Inhibitor> {
         .filter(|(what, _, _, mode, _, _)| mode == "block" && what.split(':').any(|w| w == "sleep"))
         .map(|(what, who, why, _, _, _)| Inhibitor { what, who, why })
         .collect()
+}
+
+/// The coarse idle source for compositors without `ext-idle-notify-v1`
+/// (`docs/04-idle-wayland.md`). Only the `sleep` stage; `IdleHint` is not
+/// fine enough for a dim.
+async fn idle_hint_poll(
+    manager: ManagerProxy<'static>,
+    events: mpsc::Sender<Event>,
+    fallback: SharedFallback,
+) {
+    let mut fired = false;
+    loop {
+        tokio::time::sleep(IDLE_HINT_POLL).await;
+        let control = crate::locked(&fallback).clone();
+        if !control.engaged() {
+            fired = false;
+            continue;
+        }
+        let (hint, since) = match (manager.idle_hint().await, manager.idle_since_hint().await) {
+            (Ok(hint), Ok(since)) => (hint, since),
+            (Err(err), _) | (_, Err(err)) => {
+                debug!(%err, "cannot read IdleHint");
+                continue;
+            }
+        };
+        let idle_for = if hint && since > 0 {
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH + Duration::from_micros(since))
+                .unwrap_or(Duration::ZERO)
+        } else {
+            Duration::ZERO
+        };
+        if let Some(event) = fallback_event(hint, idle_for, control.sleep_after, &mut fired) {
+            info!(?event, idle_for = ?idle_for, "logind idle fallback");
+            if events.send(event).await.is_err() {
+                return;
+            }
+        }
+    }
+}
+
+/// `fired` remembers that the stage was delivered, so it goes out once per
+/// stretch of idleness and `Activity` once when it ends.
+fn fallback_event(
+    hint: bool,
+    idle_for: Duration,
+    sleep_after: Option<Duration>,
+    fired: &mut bool,
+) -> Option<Event> {
+    match sleep_after {
+        Some(after) if hint && idle_for >= after => {
+            if *fired {
+                return None;
+            }
+            *fired = true;
+            Some(Event::Idle(Stage::Sleep))
+        }
+        _ if *fired && !hint => {
+            *fired = false;
+            Some(Event::Activity)
+        }
+        _ => None,
+    }
 }
 
 async fn executor(
@@ -324,5 +471,69 @@ async fn executor(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SLEEP_AFTER: Option<Duration> = Some(Duration::from_secs(600));
+
+    #[test]
+    fn fallback_fires_once_and_resets_on_activity() {
+        let mut fired = false;
+        let short = Duration::from_secs(60);
+        let long = Duration::from_secs(900);
+
+        assert_eq!(
+            fallback_event(false, Duration::ZERO, SLEEP_AFTER, &mut fired),
+            None
+        );
+        assert_eq!(fallback_event(true, short, SLEEP_AFTER, &mut fired), None);
+        assert_eq!(
+            fallback_event(true, long, SLEEP_AFTER, &mut fired),
+            Some(Event::Idle(Stage::Sleep))
+        );
+        assert!(fired);
+        assert_eq!(fallback_event(true, long, SLEEP_AFTER, &mut fired), None);
+        assert_eq!(
+            fallback_event(false, Duration::ZERO, SLEEP_AFTER, &mut fired),
+            Some(Event::Activity)
+        );
+        assert!(!fired);
+        assert_eq!(
+            fallback_event(false, Duration::ZERO, SLEEP_AFTER, &mut fired),
+            None
+        );
+    }
+
+    #[test]
+    fn fallback_with_the_stage_disabled() {
+        let mut fired = false;
+        assert_eq!(
+            fallback_event(true, Duration::from_secs(9000), None, &mut fired),
+            None
+        );
+        // Disabled while fired (a mode change): Activity when the idle ends.
+        fired = true;
+        assert_eq!(
+            fallback_event(true, Duration::from_secs(9000), None, &mut fired),
+            None
+        );
+        assert_eq!(
+            fallback_event(false, Duration::ZERO, None, &mut fired),
+            Some(Event::Activity)
+        );
+    }
+
+    #[test]
+    fn fallback_control() {
+        let mut control = IdleFallback::default();
+        assert!(!control.engaged());
+        control.enabled = true;
+        assert!(control.engaged());
+        control.compositor = true;
+        assert!(!control.engaged());
     }
 }

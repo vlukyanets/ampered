@@ -1,7 +1,8 @@
 //! Turning the screen off and on.
 //!
-//! Reference: `docs/06-display-dpms.md`. v0.1 ships the `command` backend;
-//! the `wlr-output-power-management` one is v0.2 (`docs/18-roadmap.md`).
+//! Reference: `docs/06-display-dpms.md`. The `wlr` backend talks to the
+//! compositor through the idle watcher's connection (`idle::IdleHandle`);
+//! `command` runs a helper as the session user.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -11,6 +12,7 @@ use tokio::process::Command;
 use tracing::{debug, info, warn};
 
 use crate::config::{Config, DisplayBackend};
+use crate::idle::IdleHandle;
 
 /// A compositor helper that hangs must not hang the daemon with it.
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -24,7 +26,15 @@ pub struct Display {
 }
 
 enum Backend {
-    Command { off: String, on: String },
+    /// The protocol when the compositor has it, the commands when it does not.
+    Wlr {
+        idle: IdleHandle,
+        fallback: Option<(String, String)>,
+    },
+    Command {
+        off: String,
+        on: String,
+    },
     None,
 }
 
@@ -44,7 +54,7 @@ struct SessionUser {
 }
 
 impl Display {
-    pub fn from_config(config: &Config) -> Display {
+    pub fn from_config(config: &Config, idle: IdleHandle) -> Display {
         let backend = match config.display.backend {
             DisplayBackend::Command => {
                 // Validation guarantees both commands are present.
@@ -58,11 +68,17 @@ impl Display {
                 Backend::None
             }
             DisplayBackend::Wlr => {
-                warn!(
-                    "display backend \"wlr\" arrives in v0.2; \
-                     use backend = \"command\" until then"
+                // Validation guarantees the pair is complete or absent.
+                let fallback = config
+                    .display
+                    .off_command
+                    .clone()
+                    .zip(config.display.on_command.clone());
+                info!(
+                    fallback = fallback.is_some(),
+                    "display backend: wlr-output-power-management"
                 );
-                Backend::None
+                Backend::Wlr { idle, fallback }
             }
         };
         Display {
@@ -72,8 +88,14 @@ impl Display {
         }
     }
 
+    /// For `wlr` this follows the compositor: gone with the connection,
+    /// back with it — unless the commands stand in.
     pub fn is_available(&self) -> bool {
-        matches!(self.backend, Backend::Command { .. })
+        match &self.backend {
+            Backend::Wlr { idle, fallback } => idle.output_power_available() || fallback.is_some(),
+            Backend::Command { .. } => true,
+            Backend::None => false,
+        }
     }
 
     /// `Screen(true)` is sent on every resume even if we never turned it off,
@@ -85,6 +107,24 @@ impl Display {
         }
 
         let command = match &self.backend {
+            Backend::Wlr { idle, fallback } => {
+                if idle.output_power_available() {
+                    idle.set_screen(on);
+                    self.last = Some(on);
+                    return;
+                }
+                match fallback {
+                    Some((off, on_cmd)) => {
+                        debug!("no output power protocol, using the command fallback");
+                        Some(if on { on_cmd.clone() } else { off.clone() })
+                    }
+                    None => {
+                        idle.set_screen(on);
+                        self.last = Some(on);
+                        return;
+                    }
+                }
+            }
             Backend::None => None,
             Backend::Command { off, on: on_cmd } => {
                 let command = if on { on_cmd } else { off };

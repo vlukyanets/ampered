@@ -67,7 +67,7 @@ hibernate at critical battery.
    gets an entry in `docs/17-decisions.md`.
 7. **Do not add dependencies** without an entry in `docs/14-code-layout.md`.
 
-## Implementation order (v0.1)
+## Implementation order (v0.1 and v0.2, both done)
 
 1. `config` — structs + validation + a test against `docs/13-config-example.md`.
 2. `core` — FSM with table-driven tests (see `docs/02-state-machine.md`).
@@ -78,7 +78,8 @@ hibernate at critical battery.
    verified with fakes.
 7. `logind` — suspend + inhibitors.
 8. `display`.
-9. v0.2: `sleep::rtc` + `sleep::planner`.
+9. v0.2: `sleep::rtc` + `sleep::planner`, then the rest of the v0.2 list
+   in `docs/18-roadmap.md`. Next up is v0.3.
 
 ## Commands
 

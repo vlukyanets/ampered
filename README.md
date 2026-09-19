@@ -10,11 +10,14 @@ about idle but not about batteries.
 
 ## Status
 
-v0.1 is implemented: config, the state machine, IPC with `amperedctl`,
-power source and modes with auto-switching, backlight, Wayland idle, sleep
-through logind, and the `command` DPMS backend. The long-sleep server cycle
-(`sleep::rtc`, `sleep::planner`) and the `wlr` DPMS backend are v0.2 —
-see [`docs/18-roadmap.md`](docs/18-roadmap.md).
+v0.2 is implemented: config, the state machine, IPC with `amperedctl`,
+power source and modes with auto-switching (the manual choice survives a
+restart), backlight, Wayland idle with a logind `IdleHint` fallback, sleep
+through logind, the `wlr` and `command` DPMS backends, `Type=notify` with
+a watchdog, and the long-sleep server cycle: lid closed, power lost, the
+machine sleeps with an RTC alarm, wakes to check for power, hibernates or
+powers off at a critical battery, and runs `resume_hook` once power is
+back. What comes next is in [`docs/18-roadmap.md`](docs/18-roadmap.md).
 
 A missing subsystem is never fatal: no compositor, no backlight or no D-Bus
 leaves the daemon running in a degraded mode, which `amperedctl status`

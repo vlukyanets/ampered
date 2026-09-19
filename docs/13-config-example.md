@@ -24,7 +24,8 @@ min_percent = 1
 
 [display]
 backend = "wlr"
-# backend = "command"
+# With "wlr" the commands are the fallback for a compositor that lacks the
+# protocol; with backend = "command" they are the only way.
 # off_command = "swaymsg 'output * power off'"
 # on_command  = "swaymsg 'output * power on'"
 

@@ -66,10 +66,20 @@ idle has no effect at all (`server` mode).
 
 ## Fallback: logind IdleHint
 
-`[idle] fallback = "logind"` — use the session's `IdleHint`/`IdleSinceHint`.
-Coarse (updated rarely by the compositor and not by all of them), only
-good enough for `sleep`, not for dim. Disabled by default. Implemented as
-polling once every 30s.
+`[idle] fallback = "logind"` — use logind's `IdleHint`/`IdleSinceHint`
+(the manager-level aggregate over sessions). Coarse (updated rarely by
+the compositor and not by all of them), only good enough for `sleep`, not
+for dim. Disabled by default.
+
+Implemented in the `logind` actor as polling once every 30s, and only while
+the fallback is enabled and the compositor backend is not connected
+(`Event::IdleBackendChanged(false)`): with `IdleHint = true` for at least
+the current mode's `sleep_after`, it emits `Event::Idle(Sleep)` once; when
+`IdleHint` drops back to `false`, `Event::Activity`. The stages come from
+the same `Command::ReplaceIdleStages` the Wayland watcher gets, so a mode
+change or a reload (including `[idle] fallback` itself) is picked up
+without a restart. `amperedctl status` shows `idle.backend = "logind"`
+while the fallback is in charge.
 
 ## Edge cases
 

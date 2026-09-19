@@ -15,7 +15,12 @@ When AC is lost, the FSM enters `LongSleep(Grace)` and starts a
 happens and the machine goes back to `Active`. If the grace period
 expires with AC still gone, the cycle begins:
 
-- **`LongSleep(Armed)`**: schedule a wake at `now + check_interval`, then suspend.
+- **`LongSleep(Armed)`**: schedule a wake at `now + check_interval`
+  (`Command::ScheduleWake(check_interval)` — the FSM has no clock, the
+  daemon adds `now`), and suspend once the daemon answers
+  `Event::WakeScheduled(true)`. A machine must never go to sleep in the
+  cycle without an armed alarm, so `WakeScheduled(false)` (no RTC, a
+  write error) counts as a failed attempt instead.
 - **`LongSleep(Sleeping)`**: wait for `PrepareForSleep(false)`.
 - **`LongSleep(Checking)`**: classify the wake-up reason. If it was the
   `User` (lid opened, input), go to `Active`. If AC is online, run
@@ -36,18 +41,41 @@ While in `LongSleep`, idle stages are not created
 | Active* | AcChanged(false) | server.enabled, trigger=ac_lost | Grace | StartTimer(Grace) |
 | Any | Ipc(LongSleep) | server.enabled | Grace | StartTimer(Grace, 0) |
 | Grace | AcChanged(true) | | Active | CancelTimer(Grace) |
-| Grace | Timer(Grace) | | Armed | ReplaceIdleStages(None), ScheduleWake, Suspend |
+| Grace | Timer(Grace) | | Armed | ReplaceIdleStages(None), ScheduleWake |
+| Armed | WakeScheduled(true) | ac | Active | RunHook, ApplyMode, ReplaceIdleStages |
+| Armed | WakeScheduled(true) | no inhibitors | Armed | Suspend |
+| Armed | WakeScheduled(false) / SleepBlocked / Activity | the alarm or the suspend didn't happen | Armed | sleep_failures += 1; < 3 → StartTimer(AwakeWindow), ≥ 3 → Active |
 | Armed | Suspending | | Sleeping | |
-| Armed | Activity / Timer(AwakeWindow) | suspend didn't happen | Armed | sleep_failures += 1; ≥ 3 → Active |
-| Sleeping | Resumed | classify = User | Active | Broadcast(interrupted) |
-| Sleeping | Resumed | ac | Active | RunHook, ReplaceIdleStages, ApplyMode |
-| Sleeping | Resumed | battery ≤ critical | — | Suspend{Hibernate} or Poweroff |
+| Armed | Timer(AwakeWindow) | ac | Active | RunHook, ApplyMode, ReplaceIdleStages |
+| Armed | Timer(AwakeWindow) | retry | Armed | ScheduleWake |
+| Sleeping | Resumed | ac | Active | RunHook, ApplyMode, ReplaceIdleStages |
+| Sleeping | Resumed | battery ≤ critical | Checking | Broadcast(critical), Suspend{Hibernate, force} or PowerOff, StartTimer(AwakeWindow) |
 | Sleeping | Resumed | otherwise | Checking | StartTimer(AwakeWindow) |
-| Checking | AcChanged(true) | | Active | CancelTimer, RunHook |
-| Checking | Timer(AwakeWindow) | | Armed | ScheduleWake, Suspend |
-| Any LongSleep | Ipc(LongSleep{cancel}) | | Active | CancelTimer(*) |
+| Checking | Activity | classify = User, lid, input | Active | CancelTimer(AwakeWindow), Broadcast(interrupted) |
+| Checking | AcChanged(true) | | Active | CancelTimer(AwakeWindow), RunHook, ApplyMode, ReplaceIdleStages |
+| Checking | Timer(AwakeWindow) | ac | Active | RunHook, ApplyMode, ReplaceIdleStages |
+| Checking | Timer(AwakeWindow) | battery ≤ critical | Checking | Broadcast(critical), the critical action, StartTimer(AwakeWindow) |
+| Checking | Timer(AwakeWindow) | otherwise | Armed | ScheduleWake |
+| Any LongSleep | Ipc(LongSleep{cancel}) | | Active | CancelTimer(*), CancelWake |
 
 `*` — Active, Dimmed, ScreenOff.
+
+A wake by the user does not have its own event: the daemon classifies the
+wake right after `Resumed` and feeds `Activity` (ADR-13), which is also what
+the compositor sends when the lid opens during `Checking`. Every exit from
+the cycle to `Active` after a sleep also sends `Undim` and `Screen(true)`,
+for the same reason a regular `Resumed` does.
+
+The critical action leaves the FSM in `Checking` with the window running:
+if the hibernate does not happen (refused, unavailable), the next window
+re-evaluates the battery and tries again, instead of sitting in a dead
+state at 10%.
+
+The daemon restarted in the middle of the cycle (`state.json` says
+`LongSleep`, no AC at startup) starts in `Checking` with the window running.
+
+A config reload past `Grace` keeps the idle stages off; the mode's stages
+come back with the exit from the cycle.
 
 ## Why `awake_window`
 
@@ -61,9 +89,10 @@ Did we wake up on the alarm, or did someone open the lid? If it's the
 latter, we must not go back to sleep.
 
 The classifier compares `now` (taken **after** resume) against
-`scheduled` (read from `state.json`, written before sleep). If the
-absolute difference is within `alarm_slack`, the wake-up is classified as
-`Scheduled`; otherwise as `User`.
+`scheduled` (the alarm the daemon armed for `Command::ScheduleWake`, also
+written to `state.json` before sleep). If the absolute difference is
+within `alarm_slack`, the wake-up is classified as `Scheduled`; otherwise
+as `User`. With no alarm armed, every wake is `User`.
 
 Extra hints (logged only, never used as the criterion — they're
 platform-dependent): an empty `wakealarm` (the kernel clears a fired
@@ -113,6 +142,9 @@ equivalent, differing only in how the alarm gets written. Requires `util-linux`.
 - `hibernate` requires configured swap and `resume=`; checks are in
   `09-sleep-logind.md`. If unavailable, it degrades to `poweroff` with a
   `warn!` at startup (better to find out at startup than at 10% battery).
+  The daemon tells the FSM with `Event::HibernateAvailable(false)`, and the
+  critical action becomes `PowerOff` — never the plain suspend that
+  `[sleep] method` falls back to, which would keep draining the battery.
 - `poweroff` — `logind.PowerOff(false)`.
 
 Before the critical action, `RunHook(resume_hook)` is not called, but

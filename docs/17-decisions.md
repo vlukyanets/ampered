@@ -54,7 +54,7 @@ a negligible probability.
 ## ADR-10 — Manual mode doesn't survive a restart
 **2026-09.** Reason: no persistence store in v0.1; `state.json` is only
 for sleep. Consequences: after `systemctl restart`, it's back to auto.
-Revisit in v0.2.
+Revisit in v0.2. *Superseded by ADR-15.*
 
 ## ADR-11 — Inhibitors reach the FSM as events, and are re-checked on the way out
 **2026-09.** logind has no "inhibitors changed" signal, and `ListInhibitors()`
@@ -75,3 +75,36 @@ in the NUL-separated payload. Reason: no C dependency, and the kernel's uevent
 format is a dozen lines of parsing. Consequences: group 1 needs CAP_NET_ADMIN,
 which the root unit has; without it the actor warns once and lives on the 60s
 poll, so a non-root development run still works.
+
+## ADR-13 — The clock stays out of the FSM: relative wakes, classification in the daemon
+**2026-09.** `Command::ScheduleWake` carries a `Duration` (`check_interval`),
+and `main` adds `now`, arms the RTC, remembers the absolute time and answers
+`Event::WakeScheduled(bool)`; only `true` lets the FSM send `Suspend`. On
+`Resumed` the FSM moves from `LongSleep(Sleeping)` to `LongSleep(Checking)`
+unconditionally; the daemon then compares `now` with the remembered alarm
+(`sleep::planner::classify_wake`) and, for a wake by the user, feeds
+`Event::Activity` — the same event the compositor sends when the lid opens
+during `Checking`. Reason: ADR-2 — the engine has no clock, and a
+`SystemTime` in a command or a classification inside the FSM would need one.
+Consequences: a wake by the user passes through `Checking` for one event,
+with a `StartTimer`/`CancelTimer` pair; one round trip between
+`ScheduleWake` and `Suspend`, which is what keeps a machine from sleeping in
+the cycle with no alarm armed.
+
+## ADR-14 — `sd_notify` by hand, no `sd-notify` crate
+**2026-09.** `notify.rs` sends the `KEY=VALUE` datagram to `NOTIFY_SOCKET`
+itself (path or abstract name) with `std::os::unix::net`. Reason: the whole
+protocol is one `sendto`, and the crate would be the only dependency in the
+tree that exists for a single function. Consequences: `READY`, `RELOADING`,
+`STOPPING`, `STATUS` and `WATCHDOG` are the entire vocabulary we speak;
+`MONOTONIC_USEC` for `Type=notify-reload` is not sent, so the unit stays
+`Type=notify` with `ExecReload`.
+
+## ADR-15 — Manual mode is persisted as one file
+**2026-09.** Supersedes ADR-10. `$STATE_DIRECTORY/mode` holds the name of
+the manual mode; it is written on `amperedctl mode <name>`, removed on
+`amperedctl mode auto`, and read once at startup. Reason: a user who chose
+`performance` before a reboot did not choose `balanced` after it, and one
+name in one file needs no store. Consequences: `state.json` stays the
+sleep-only file it was; a name missing from the reloaded config is dropped
+with a `warn!`, never applied blindly.

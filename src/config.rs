@@ -307,7 +307,7 @@ impl fmt::Display for SleepMethod {
 }
 
 /// The long-sleep server cycle (`docs/10-long-sleep-rtc.md`). Parsed and
-/// validated in v0.1, acted upon from v0.2 on.
+/// validated here, driven by `core` and `sleep`.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]
 pub struct Server {
@@ -424,12 +424,23 @@ impl Config {
             return invalid("[backlight] min_percent must be 0..=100");
         }
 
-        if self.display.backend == DisplayBackend::Command
-            && (self.display.off_command.is_none() || self.display.on_command.is_none())
-        {
-            return invalid(
-                "[display] backend = \"command\" requires both off_command and on_command",
-            );
+        let commands = (
+            self.display.off_command.is_some(),
+            self.display.on_command.is_some(),
+        );
+        match self.display.backend {
+            DisplayBackend::Command if commands != (true, true) => {
+                return invalid(
+                    "[display] backend = \"command\" requires both off_command and on_command",
+                );
+            }
+            // As a fallback the pair is optional, but it is a pair.
+            DisplayBackend::Wlr if commands.0 != commands.1 => {
+                return invalid(
+                    "[display] off_command and on_command go together (the fallback for \"wlr\")",
+                );
+            }
+            _ => {}
         }
 
         if self.server.check_interval < MIN_CHECK_INTERVAL {
@@ -592,6 +603,24 @@ mod tests {
     fn unknown_keys_are_rejected() {
         let err = Config::parse("[general]\nlog_levle = \"info\"\n").unwrap_err();
         assert!(err.to_string().contains("log_levle"), "{err}");
+    }
+
+    #[test]
+    fn display_commands_go_together() {
+        let display = |lines: &str| format!("[auto_mode]\nenabled = false\n[display]\n{lines}");
+        let only_off = display("backend = \"wlr\"\noff_command = \"x\"\n");
+        let err = Config::parse(&only_off).unwrap().validate().unwrap_err();
+        assert!(err.to_string().contains("go together"), "{err}");
+
+        let both = display("backend = \"wlr\"\noff_command = \"x\"\non_command = \"y\"\n");
+        Config::parse(&both)
+            .unwrap()
+            .validate()
+            .expect("a fallback pair");
+
+        let command = display("backend = \"command\"\noff_command = \"x\"\n");
+        let err = Config::parse(&command).unwrap().validate().unwrap_err();
+        assert!(err.to_string().contains("requires both"), "{err}");
     }
 
     #[test]

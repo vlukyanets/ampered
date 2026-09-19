@@ -7,11 +7,11 @@
 
 use std::fmt;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
-use crate::config::{Config, Mode, SleepMethod, format_duration};
+use crate::config::{Config, CriticalAction, Mode, ServerTrigger, SleepMethod, format_duration};
 use crate::ipc::{
     IdleInfo, InhibitWhat, InhibitorInfo, MAX_INHIBIT_TTL, ModeInfo, ModesData, PowerInfo, Request,
     RequestId, Response, ServerInfo, SleepInfo, StagesInfo, StateEvent, StatusData,
@@ -29,7 +29,7 @@ pub enum State {
     Suspending,
     /// Between `PrepareForSleep(true)` and `PrepareForSleep(false)`.
     Sleeping,
-    /// The server cycle; driven from v0.2 on (`docs/10-long-sleep-rtc.md`).
+    /// The server cycle (`docs/10-long-sleep-rtc.md`).
     LongSleep(Phase),
 }
 
@@ -198,10 +198,14 @@ pub enum Event {
     Ipc(RequestId, Request),
     /// The compositor connected or was lost.
     IdleBackendChanged(bool),
+    /// Whether logind and the kernel can hibernate (`docs/09-sleep-logind.md`).
+    HibernateAvailable(bool),
     /// Refreshed view of logind's blocking inhibitors (ADR-11).
     Inhibitors(Vec<Inhibitor>),
     /// A suspend attempt was refused because of inhibitors (ADR-11).
     SleepBlocked(Vec<Inhibitor>),
+    /// The RTC alarm asked for by `ScheduleWake` is armed — or could not be (ADR-13).
+    WakeScheduled(bool),
     ReloadRequested,
     ShutdownRequested,
 }
@@ -213,14 +217,22 @@ pub enum Command {
     Screen(bool),
     ApplyMode(String),
     ReplaceIdleStages(Stages),
-    Suspend { method: SleepMethod, force: bool },
-    ScheduleWake(SystemTime),
+    Suspend {
+        method: SleepMethod,
+        force: bool,
+    },
+    PowerOff,
+    /// Wake the machine this long from now; the FSM has no clock (ADR-13).
+    ScheduleWake(Duration),
+    CancelWake,
     RunHook(String),
     StartTimer(TimerId, Duration),
     CancelTimer(TimerId),
     Reply(RequestId, Response),
     Broadcast(StateEvent),
-    Reload { reply_to: Option<RequestId> },
+    Reload {
+        reply_to: Option<RequestId>,
+    },
     Shutdown,
 }
 
@@ -242,10 +254,17 @@ pub struct Engine {
     /// Where to go back to if the suspend we asked for does not happen.
     suspend_from: State,
     idle_connected: bool,
-    /// Failed long-sleep attempts; the server cycle that reads it lands in v0.2.
-    #[allow(dead_code)]
+    /// Until told otherwise, assume the critical action can hibernate.
+    hibernate_available: bool,
+    /// Attempts of the server cycle that did not end in a suspend.
     sleep_failures: u8,
+    /// The last cycle ended because the user woke the machine; shown in
+    /// status until the next cycle starts (`docs/10-long-sleep-rtc.md`).
+    interrupted: bool,
 }
+
+/// Give up on the server cycle after this many attempts that did not sleep.
+pub const MAX_SLEEP_FAILURES: u8 = 3;
 
 impl Engine {
     pub fn new(config: Arc<Config>, power: PowerSnapshot) -> Engine {
@@ -261,7 +280,9 @@ impl Engine {
             pending_sleep: false,
             suspend_from: State::Active,
             idle_connected: false,
+            hibernate_available: true,
             sleep_failures: 0,
+            interrupted: false,
         };
         engine.low = engine.compute_low(engine.power.battery);
         engine.mode = ModeSelection::Auto(engine.auto_mode_name());
@@ -271,6 +292,21 @@ impl Engine {
     /// Commands to run once at startup: put the machine into the current mode.
     pub fn start(&mut self) -> Vec<Command> {
         self.mode_commands()
+    }
+
+    /// The manual mode saved by a previous run (ADR-15), before `start`.
+    /// A name the config no longer has is refused, and auto stays in charge.
+    pub fn restore_manual_mode(&mut self, name: &str) -> bool {
+        if !self.config.modes.contains_key(name) {
+            warn!(
+                mode = name,
+                "saved manual mode is not in the config, ignoring it"
+            );
+            return false;
+        }
+        info!(mode = name, "manual mode restored");
+        self.mode = ModeSelection::Manual(name.to_string());
+        true
     }
 
     pub fn state(&self) -> State {
@@ -298,7 +334,20 @@ impl Engine {
         if let ModeSelection::Auto(_) = self.mode {
             self.mode = ModeSelection::Auto(self.auto_mode_name());
         }
-        self.mode_commands()
+        let mut commands = self.mode_commands();
+        // Past Grace the stages are off for the cycle; a reload must not
+        // switch them back on (`docs/10-long-sleep-rtc.md`).
+        if matches!(
+            self.state,
+            State::LongSleep(Phase::Armed | Phase::Sleeping | Phase::Checking)
+        ) {
+            for command in &mut commands {
+                if let Command::ReplaceIdleStages(stages) = command {
+                    *stages = Stages::NONE;
+                }
+            }
+        }
+        commands
     }
 
     /// Put the current mode into effect. A config with no `[modes]` at all has
@@ -323,8 +372,39 @@ impl Engine {
                 from: from.to_string(),
                 to: self.state.to_string(),
             }));
+            // `next_wake` is filled in by `main`, which armed the alarm.
+            let phase = match (from, self.state) {
+                (_, State::LongSleep(phase)) => Some(phase.to_string()),
+                (State::LongSleep(_), _) => Some(self.server_phase()),
+                _ => None,
+            };
+            if let Some(phase) = phase {
+                commands.push(Command::Broadcast(StateEvent::LongSleep {
+                    phase,
+                    next_wake: None,
+                }));
+            }
         }
         commands
+    }
+
+    /// The daemon came back in the middle of a cycle (`state.json`, no AC):
+    /// pick it up at `Checking`, as if the alarm had just fired.
+    pub fn resume_cycle(&mut self) -> Vec<Command> {
+        info!("resuming the long-sleep cycle from a previous run");
+        self.state = State::LongSleep(Phase::Checking);
+        vec![
+            Command::ReplaceIdleStages(Stages::NONE),
+            Command::StartTimer(TimerId::AwakeWindow, self.config.server.awake_window),
+        ]
+    }
+
+    fn server_phase(&self) -> String {
+        match self.state {
+            State::LongSleep(phase) => phase.to_string(),
+            _ if self.interrupted => "interrupted".to_string(),
+            _ => "idle".to_string(),
+        }
     }
 
     fn dispatch(&mut self, event: Event) -> Vec<Command> {
@@ -341,11 +421,19 @@ impl Engine {
                 self.idle_connected = connected;
                 Vec::new()
             }
+            Event::HibernateAvailable(available) => {
+                self.hibernate_available = available;
+                if !available && self.config.server.critical_action == CriticalAction::Hibernate {
+                    warn!("hibernate is unavailable; the critical action degrades to poweroff");
+                }
+                Vec::new()
+            }
             Event::Inhibitors(list) => {
                 self.external = list;
                 Vec::new()
             }
             Event::SleepBlocked(list) => self.on_sleep_blocked(list),
+            Event::WakeScheduled(armed) => self.on_wake_scheduled(armed),
             Event::ReloadRequested => vec![Command::Reload { reply_to: None }],
             Event::ShutdownRequested => {
                 // Never leave the user with a dark screen (`docs/02-state-machine.md`).
@@ -391,6 +479,15 @@ impl Engine {
                 self.state = State::Active;
                 commands.push(Command::Undim);
                 commands.push(Command::Screen(true));
+            }
+            // The suspend we asked for did not happen.
+            State::LongSleep(Phase::Armed) => commands.extend(self.cycle_failure()),
+            // The user woke the machine, or opened the lid during the window.
+            State::LongSleep(Phase::Checking) => {
+                self.interrupted = true;
+                info!("long sleep interrupted by the user");
+                commands.push(Command::CancelTimer(TimerId::AwakeWindow));
+                commands.extend(self.leave_cycle());
             }
             State::Active | State::Sleeping | State::LongSleep(_) => {}
         }
@@ -460,11 +557,14 @@ impl Engine {
 
     fn on_sleep_blocked(&mut self, blockers: Vec<Inhibitor>) -> Vec<Command> {
         self.external = blockers;
-        if self.state != State::Suspending {
-            return Vec::new();
+        match self.state {
+            State::Suspending => {
+                self.state = self.suspend_from;
+                self.arm_sleep_retry()
+            }
+            State::LongSleep(Phase::Armed) => self.cycle_failure(),
+            _ => Vec::new(),
         }
-        self.state = self.suspend_from;
-        self.arm_sleep_retry()
     }
 
     fn on_suspending(&mut self) -> Vec<Command> {
@@ -472,13 +572,19 @@ impl Engine {
         // `systemctl suspend` from elsewhere) — the machine is going down
         // either way.
         self.pending_sleep = false;
-        self.state = State::Sleeping;
+        self.state = match self.state {
+            State::LongSleep(_) => State::LongSleep(Phase::Sleeping),
+            _ => State::Sleeping,
+        };
         Vec::new()
     }
 
     fn on_resumed(&mut self) -> Vec<Command> {
-        self.state = State::Active;
         self.pending_sleep = false;
+        if let State::LongSleep(_) = self.state {
+            return self.check_power();
+        }
+        self.state = State::Active;
         // DPMS state after S3 is non-deterministic, and the compositor may
         // have dropped our notifications (`docs/06-display-dpms.md`).
         vec![
@@ -501,9 +607,170 @@ impl Engine {
                 }
                 Vec::new()
             }
-            // Grace and AwakeWindow belong to the server cycle (v0.2).
+            TimerId::Grace if self.state == State::LongSleep(Phase::Grace) => self.arm(true),
+            TimerId::AwakeWindow => match self.state {
+                // A retry after an attempt that did not sleep — unless the
+                // power came back in the meantime.
+                State::LongSleep(Phase::Armed) if self.power.ac => self.power_is_back(),
+                State::LongSleep(Phase::Armed) => self.arm(false),
+                State::LongSleep(Phase::Checking) => {
+                    if self.power.ac || self.battery_critical() {
+                        self.check_power()
+                    } else {
+                        self.arm(false)
+                    }
+                }
+                _ => Vec::new(),
+            },
             _ => Vec::new(),
         }
+    }
+
+    // ---------------------------------------------------------- server cycle
+
+    fn enter_grace(&mut self, delay: Duration) -> Vec<Command> {
+        info!(grace = %format_duration(delay), "entering the long-sleep cycle");
+        self.state = State::LongSleep(Phase::Grace);
+        self.sleep_failures = 0;
+        self.interrupted = false;
+        vec![Command::StartTimer(TimerId::Grace, delay)]
+    }
+
+    /// Schedule the wake; the suspend follows `WakeScheduled(true)`.
+    fn arm(&mut self, first: bool) -> Vec<Command> {
+        self.state = State::LongSleep(Phase::Armed);
+        let mut commands = Vec::new();
+        if first {
+            commands.push(Command::ReplaceIdleStages(Stages::NONE));
+        }
+        commands.push(Command::ScheduleWake(self.config.server.check_interval));
+        commands
+    }
+
+    fn on_wake_scheduled(&mut self, armed: bool) -> Vec<Command> {
+        if self.state != State::LongSleep(Phase::Armed) {
+            return Vec::new();
+        }
+        if !armed {
+            warn!("no wake alarm; not sleeping in the cycle without one");
+            return self.cycle_failure();
+        }
+        // Power returned while the alarm was being armed: no point sleeping.
+        if self.power.ac {
+            return self.power_is_back();
+        }
+        let blockers = self.sleep_blockers();
+        if !blockers.is_empty() {
+            info!(blocked_by = ?blockers, "long sleep blocked");
+            return self.cycle_failure();
+        }
+        vec![Command::Suspend {
+            method: self.config.sleep.method,
+            force: false,
+        }]
+    }
+
+    /// An attempt that did not end in a suspend: wait out the window and
+    /// try again, up to `MAX_SLEEP_FAILURES`.
+    fn cycle_failure(&mut self) -> Vec<Command> {
+        self.sleep_failures += 1;
+        if self.sleep_failures >= MAX_SLEEP_FAILURES {
+            warn!(
+                attempts = self.sleep_failures,
+                "long sleep keeps failing, giving up on the cycle"
+            );
+            return self.leave_cycle();
+        }
+        warn!(
+            attempt = self.sleep_failures,
+            "long sleep did not happen, retrying after the awake window"
+        );
+        vec![Command::StartTimer(
+            TimerId::AwakeWindow,
+            self.config.server.awake_window,
+        )]
+    }
+
+    /// After a wake in the cycle, and again when the window closes: is the
+    /// power back, is the battery critical, or do we go on?
+    fn check_power(&mut self) -> Vec<Command> {
+        if self.power.ac {
+            return self.power_is_back();
+        }
+        self.state = State::LongSleep(Phase::Checking);
+        let mut commands = Vec::new();
+        if self.battery_critical() {
+            warn!(
+                battery = ?self.power.battery,
+                action = ?self.config.server.critical_action,
+                "battery critical"
+            );
+            commands.push(Command::Broadcast(StateEvent::LongSleep {
+                phase: "critical".to_string(),
+                next_wake: None,
+            }));
+            commands.push(match self.config.server.critical_action {
+                CriticalAction::Hibernate if self.hibernate_available => Command::Suspend {
+                    method: SleepMethod::Hibernate,
+                    force: true,
+                },
+                // A plain suspend would keep draining the battery.
+                CriticalAction::Hibernate | CriticalAction::Poweroff => Command::PowerOff,
+            });
+        }
+        // The window also covers a critical action that does not happen:
+        // the next check tries again instead of leaving a dead state.
+        commands.push(Command::StartTimer(
+            TimerId::AwakeWindow,
+            self.config.server.awake_window,
+        ));
+        commands
+    }
+
+    fn battery_critical(&self) -> bool {
+        self.power
+            .battery
+            .is_some_and(|percent| percent <= self.config.server.battery_critical_percent)
+    }
+
+    /// The cycle ends because AC is back: the hook, then the mode and the
+    /// stages that `Armed` took away.
+    fn power_is_back(&mut self) -> Vec<Command> {
+        info!("power is back, leaving the long-sleep cycle");
+        let mut commands = Vec::new();
+        if let Some(hook) = &self.config.server.resume_hook {
+            commands.push(Command::RunHook(hook.clone()));
+        }
+        commands.extend(self.leave_cycle());
+        commands
+    }
+
+    /// Back to `Active` from any phase, with the alarm and timers gone.
+    fn leave_cycle(&mut self) -> Vec<Command> {
+        self.state = State::Active;
+        let changed = self.select_auto_mode();
+        let mut commands = vec![Command::CancelWake];
+        commands.extend(self.mode_commands());
+        if changed {
+            commands.push(Command::Broadcast(StateEvent::Mode {
+                name: self.mode.name().to_string(),
+            }));
+        }
+        commands.push(Command::Undim);
+        commands.push(Command::Screen(true));
+        commands
+    }
+
+    fn cancel_cycle(&mut self, phase: Phase) -> Vec<Command> {
+        info!(%phase, "long-sleep cycle cancelled");
+        let mut commands = match phase {
+            Phase::Grace => vec![Command::CancelTimer(TimerId::Grace)],
+            Phase::Armed | Phase::Checking => vec![Command::CancelTimer(TimerId::AwakeWindow)],
+            Phase::Sleeping => Vec::new(),
+        };
+        self.interrupted = false;
+        commands.extend(self.leave_cycle());
+        commands
     }
 
     // ----------------------------------------------------------------- power
@@ -515,7 +782,28 @@ impl Engine {
         self.power.ac = ac;
         info!(ac, "power source changed");
         let mut commands = vec![Command::Broadcast(StateEvent::Power { ac })];
-        commands.extend(self.reapply_auto_mode());
+        match self.state {
+            State::LongSleep(Phase::Grace) if ac => {
+                self.state = State::Active;
+                commands.push(Command::CancelTimer(TimerId::Grace));
+                commands.extend(self.reapply_auto_mode());
+            }
+            State::LongSleep(Phase::Checking) if ac => {
+                commands.push(Command::CancelTimer(TimerId::AwakeWindow));
+                commands.extend(self.power_is_back());
+            }
+            _ => {
+                commands.extend(self.reapply_auto_mode());
+                let server = &self.config.server;
+                if !ac
+                    && self.state.is_awake()
+                    && server.enabled
+                    && server.trigger == ServerTrigger::AcLost
+                {
+                    commands.extend(self.enter_grace(server.grace_period));
+                }
+            }
+        }
         commands
     }
 
@@ -573,16 +861,25 @@ impl Engine {
         }
     }
 
-    fn reapply_auto_mode(&mut self) -> Vec<Command> {
+    /// Re-evaluates an auto mode; `true` when a different one was picked.
+    fn select_auto_mode(&mut self) -> bool {
         if !matches!(self.mode, ModeSelection::Auto(_)) {
-            return Vec::new();
+            return false;
         }
         let wanted = self.auto_mode_name();
         if wanted == self.mode.name() {
-            return Vec::new();
+            return false;
         }
         self.mode = ModeSelection::Auto(wanted);
-        self.mode_changed()
+        true
+    }
+
+    fn reapply_auto_mode(&mut self) -> Vec<Command> {
+        if self.select_auto_mode() {
+            self.mode_changed()
+        } else {
+            Vec::new()
+        }
     }
 
     fn mode_changed(&self) -> Vec<Command> {
@@ -649,11 +946,7 @@ impl Engine {
                 commands.push(Command::Reply(id, Response::Ok));
                 commands
             }
-            // The server cycle lands in v0.2 (`docs/18-roadmap.md`).
-            Request::LongSleep { .. } => vec![Command::Reply(
-                id,
-                Response::error("long sleep is not implemented yet (v0.2)"),
-            )],
+            Request::LongSleep { cancel } => self.on_long_sleep(id, cancel),
             Request::Inhibit { what, why, ttl } => self.on_inhibit(id, what, why, ttl),
             Request::Uninhibit { id: inhibit } => self.on_uninhibit(id, inhibit),
             Request::Reload => vec![Command::Reload { reply_to: Some(id) }],
@@ -664,6 +957,42 @@ impl Engine {
                 Response::error("subscribe is handled by the IPC server"),
             )],
         }
+    }
+
+    fn on_long_sleep(&mut self, id: RequestId, cancel: bool) -> Vec<Command> {
+        let reply = |commands: &mut Vec<Command>| commands.push(Command::Reply(id, Response::Ok));
+        if cancel {
+            let State::LongSleep(phase) = self.state else {
+                return vec![Command::Reply(
+                    id,
+                    Response::error("not in the long-sleep cycle"),
+                )];
+            };
+            let mut commands = self.cancel_cycle(phase);
+            reply(&mut commands);
+            return commands;
+        }
+        if !self.config.server.enabled {
+            return vec![Command::Reply(
+                id,
+                Response::error("[server] is not enabled"),
+            )];
+        }
+        if let State::LongSleep(phase) = self.state {
+            return vec![Command::Reply(
+                id,
+                Response::error(format!("already in the long-sleep cycle ({phase})")),
+            )];
+        }
+        if !self.state.is_awake() {
+            return vec![Command::Reply(
+                id,
+                Response::error("cannot start the cycle while going to sleep"),
+            )];
+        }
+        let mut commands = self.enter_grace(Duration::ZERO);
+        reply(&mut commands);
+        commands
     }
 
     fn on_set_mode(&mut self, id: RequestId, name: &str) -> Vec<Command> {
@@ -758,10 +1087,7 @@ impl Engine {
             },
             server: ServerInfo {
                 enabled: self.config.server.enabled,
-                phase: match self.state {
-                    State::LongSleep(phase) => phase.to_string(),
-                    _ => "idle".to_string(),
-                },
+                phase: self.server_phase(),
                 next_wake: None,
             },
             inhibitors: self
@@ -875,7 +1201,7 @@ mod tests {
                 Event::Idle(Stage::Sleep),
                 Event::Suspending,
             ],
-            State::LongSleep(_) => unreachable!("the server cycle lands in v0.2"),
+            State::LongSleep(_) => unreachable!("use server_in for the cycle"),
         };
         for event in path {
             engine.handle(event.clone());
@@ -1012,6 +1338,7 @@ mod tests {
             ),
             // Bookkeeping events produce nothing on their own.
             (Active, Event::IdleBackendChanged(false), Active, vec![]),
+            (Active, Event::HibernateAvailable(false), Active, vec![]),
             (
                 Active,
                 Event::Inhibitors(vec![inhibitor("x")]),
@@ -1087,6 +1414,23 @@ mod tests {
         );
         // No change, no broadcast.
         assert_eq!(engine.handle(Event::Activity), vec![]);
+    }
+
+    #[test]
+    fn restore_manual_mode_before_start() {
+        let mut engine = fresh();
+        assert!(engine.restore_manual_mode("bat"));
+        assert_eq!(engine.mode(), &ModeSelection::Manual("bat".into()));
+        assert_eq!(engine.start()[0], Command::ApplyMode("bat".into()));
+        // Manual: the power source no longer matters.
+        assert_eq!(
+            engine.handle(Event::AcChanged(false)),
+            vec![Command::Broadcast(StateEvent::Power { ac: false })]
+        );
+
+        let mut engine = fresh();
+        assert!(!engine.restore_manual_mode("turbo"));
+        assert_eq!(engine.mode(), &ModeSelection::Auto("ac".into()));
     }
 
     #[test]
@@ -1623,18 +1967,527 @@ mod tests {
     }
 
     #[test]
-    fn ipc_not_implemented_and_not_ours() {
+    fn ipc_not_ours() {
         let mut engine = fresh();
-        let commands = engine.handle(ipc(Request::LongSleep { cancel: false }));
-        assert!(matches!(
-            &commands[0],
-            Command::Reply(7, Response::Error(_))
-        ));
         let commands = engine.handle(ipc(Request::Subscribe));
         assert!(matches!(
             &commands[0],
             Command::Reply(7, Response::Error(_))
         ));
         assert_eq!(engine.state(), State::Active);
+    }
+
+    // ---------------------------------------------------------- server cycle
+
+    const SERVER: &str = r#"
+        [server]
+        enabled = true
+        trigger = "ac_lost"
+        grace_period = "3m"
+        check_interval = "20m"
+        awake_window = "45s"
+        alarm_slack = "90s"
+        battery_critical_percent = 10
+        critical_action = "hibernate"
+        resume_hook = "systemctl start my-services.target"
+    "#;
+    const GRACE: Duration = Duration::from_secs(180);
+    const CHECK_INTERVAL: Duration = Duration::from_secs(20 * 60);
+    const AWAKE_WINDOW: Duration = Duration::from_secs(45);
+    const HIBERNATE: Command = Command::Suspend {
+        method: SleepMethod::Hibernate,
+        force: true,
+    };
+
+    fn server_config(extra: &str) -> Arc<Config> {
+        config_from(&format!("{CONFIG}\n{SERVER}\n{extra}"))
+    }
+
+    /// A server on AC, in the `ac` mode.
+    fn server() -> Engine {
+        Engine::new(
+            server_config(""),
+            PowerSnapshot {
+                ac: true,
+                battery: Some(50),
+                batteries: vec!["BAT0".into()],
+            },
+        )
+    }
+
+    /// The server driven into `phase` along the documented cycle.
+    fn server_in(phase: Phase) -> Engine {
+        let mut engine = server();
+        engine.handle(Event::AcChanged(false));
+        assert_eq!(engine.state(), State::LongSleep(Phase::Grace));
+        let path: &[Event] = match phase {
+            Phase::Grace => &[],
+            Phase::Armed => &[Event::Timer(TimerId::Grace)],
+            Phase::Sleeping => &[
+                Event::Timer(TimerId::Grace),
+                Event::WakeScheduled(true),
+                Event::Suspending,
+            ],
+            Phase::Checking => &[
+                Event::Timer(TimerId::Grace),
+                Event::WakeScheduled(true),
+                Event::Suspending,
+                Event::Resumed,
+            ],
+        };
+        for event in path {
+            engine.handle(event.clone());
+        }
+        assert_eq!(engine.state(), State::LongSleep(phase));
+        engine
+    }
+
+    fn phase(name: &str) -> Command {
+        Command::Broadcast(StateEvent::LongSleep {
+            phase: name.into(),
+            next_wake: None,
+        })
+    }
+
+    /// Leaving the cycle: alarm gone, mode and stages back, screen on.
+    fn back_to_active(mode: &str) -> Vec<Command> {
+        vec![
+            Command::CancelWake,
+            Command::ApplyMode(mode.into()),
+            Command::ReplaceIdleStages(stages(mode)),
+            Command::Undim,
+            Command::Screen(true),
+        ]
+    }
+
+    #[test]
+    fn ac_lost_enters_grace_and_ac_back_leaves_it() {
+        let mut engine = server();
+        assert_eq!(
+            engine.handle(Event::AcChanged(false)),
+            vec![
+                Command::Broadcast(StateEvent::Power { ac: false }),
+                Command::ApplyMode("bat".into()),
+                Command::ReplaceIdleStages(stages("bat")),
+                Command::Broadcast(StateEvent::Mode { name: "bat".into() }),
+                Command::StartTimer(TimerId::Grace, GRACE),
+                Command::Broadcast(StateEvent::State {
+                    from: "Active".into(),
+                    to: "LongSleep(grace)".into(),
+                }),
+                phase("grace"),
+            ]
+        );
+        assert_eq!(engine.status().server.phase, "grace");
+
+        // Power back within the grace period: nothing else happened.
+        assert_eq!(
+            effects(engine.handle(Event::AcChanged(true))),
+            vec![
+                Command::CancelTimer(TimerId::Grace),
+                Command::ApplyMode("ac".into()),
+                Command::ReplaceIdleStages(stages("ac")),
+            ]
+        );
+        assert_eq!(engine.state(), State::Active);
+        assert_eq!(engine.status().server.phase, "idle");
+    }
+
+    #[test]
+    fn grace_starts_from_every_awake_state() {
+        for state in [State::Active, State::Dimmed, State::ScreenOff] {
+            let mut engine = server();
+            match state {
+                State::Dimmed => {
+                    engine.handle(Event::Idle(Stage::Dim));
+                }
+                State::ScreenOff => {
+                    engine.handle(Event::Idle(Stage::Dim));
+                    engine.handle(Event::Idle(Stage::ScreenOff));
+                }
+                _ => {}
+            }
+            engine.handle(Event::AcChanged(false));
+            assert_eq!(engine.state(), State::LongSleep(Phase::Grace), "{state}");
+        }
+    }
+
+    #[test]
+    fn idle_stages_are_ignored_in_the_cycle() {
+        let mut engine = server_in(Phase::Grace);
+        assert_eq!(engine.handle(Event::Idle(Stage::Dim)), vec![]);
+        assert_eq!(engine.handle(Event::Idle(Stage::Sleep)), vec![]);
+        assert_eq!(engine.handle(Event::Activity), vec![]);
+        assert_eq!(engine.state(), State::LongSleep(Phase::Grace));
+    }
+
+    /// Scenario 6: Grace → Armed → Sleeping → Checking → Armed, exit by AC.
+    #[test]
+    fn full_cycle_exits_when_power_is_back() {
+        let mut engine = server_in(Phase::Grace);
+
+        assert_eq!(
+            engine.handle(Event::Timer(TimerId::Grace)),
+            vec![
+                Command::ReplaceIdleStages(Stages::NONE),
+                Command::ScheduleWake(CHECK_INTERVAL),
+                Command::Broadcast(StateEvent::State {
+                    from: "LongSleep(grace)".into(),
+                    to: "LongSleep(armed)".into(),
+                }),
+                phase("armed"),
+            ]
+        );
+        // No suspend before the alarm is confirmed.
+        assert_eq!(engine.handle(Event::WakeScheduled(true)), vec![SUSPEND]);
+        assert_eq!(engine.state(), State::LongSleep(Phase::Armed));
+
+        assert_eq!(effects(engine.handle(Event::Suspending)), vec![]);
+        assert_eq!(engine.state(), State::LongSleep(Phase::Sleeping));
+
+        // The alarm fired, still on battery: wait out the window.
+        assert_eq!(
+            effects(engine.handle(Event::Resumed)),
+            vec![Command::StartTimer(TimerId::AwakeWindow, AWAKE_WINDOW)]
+        );
+        assert_eq!(engine.state(), State::LongSleep(Phase::Checking));
+        assert_eq!(engine.status().server.phase, "checking");
+
+        // Stages stay off from here on: no second ReplaceIdleStages.
+        assert_eq!(
+            effects(engine.handle(Event::Timer(TimerId::AwakeWindow))),
+            vec![Command::ScheduleWake(CHECK_INTERVAL)]
+        );
+        assert_eq!(engine.state(), State::LongSleep(Phase::Armed));
+        assert_eq!(engine.handle(Event::WakeScheduled(true)), vec![SUSPEND]);
+        engine.handle(Event::Suspending);
+
+        // Power returned while asleep; the next alarm sees it.
+        engine.handle(Event::AcChanged(true));
+        assert_eq!(engine.state(), State::LongSleep(Phase::Sleeping));
+        assert_eq!(
+            engine.handle(Event::Resumed),
+            vec![
+                Command::RunHook("systemctl start my-services.target".into()),
+                Command::CancelWake,
+                Command::ApplyMode("ac".into()),
+                Command::ReplaceIdleStages(stages("ac")),
+                Command::Undim,
+                Command::Screen(true),
+                Command::Broadcast(StateEvent::State {
+                    from: "LongSleep(sleeping)".into(),
+                    to: "Active".into(),
+                }),
+                phase("idle"),
+            ]
+        );
+        assert_eq!(engine.mode(), &ModeSelection::Auto("ac".into()));
+    }
+
+    #[test]
+    fn ac_back_during_the_window_ends_the_cycle() {
+        let mut engine = server_in(Phase::Checking);
+        assert_eq!(
+            effects(engine.handle(Event::AcChanged(true))),
+            vec![
+                Command::CancelTimer(TimerId::AwakeWindow),
+                Command::RunHook("systemctl start my-services.target".into()),
+                Command::CancelWake,
+                Command::ApplyMode("ac".into()),
+                Command::ReplaceIdleStages(stages("ac")),
+                Command::Undim,
+                Command::Screen(true),
+            ]
+        );
+        assert_eq!(engine.state(), State::Active);
+    }
+
+    #[test]
+    fn manual_trigger_needs_the_request() {
+        let text =
+            format!("{CONFIG}\n{SERVER}").replace("trigger = \"ac_lost\"", "trigger = \"manual\"");
+        let mut engine = Engine::new(config_from(&text), PowerSnapshot::on_ac());
+        engine.handle(Event::AcChanged(false));
+        assert_eq!(engine.state(), State::Active);
+
+        assert_eq!(
+            effects(engine.handle(ipc(Request::LongSleep { cancel: false }))),
+            vec![
+                Command::StartTimer(TimerId::Grace, Duration::ZERO),
+                Command::Reply(7, Response::Ok),
+            ]
+        );
+        assert_eq!(engine.state(), State::LongSleep(Phase::Grace));
+    }
+
+    /// Scenario 6, exit by the user: the daemon turns a wake by the user
+    /// into `Activity` (ADR-13).
+    #[test]
+    fn user_wake_interrupts_the_cycle() {
+        let mut engine = server_in(Phase::Checking);
+        let mut expected = vec![Command::CancelTimer(TimerId::AwakeWindow)];
+        expected.extend(back_to_active("bat"));
+        expected.push(Command::Broadcast(StateEvent::State {
+            from: "LongSleep(checking)".into(),
+            to: "Active".into(),
+        }));
+        expected.push(phase("interrupted"));
+        assert_eq!(engine.handle(Event::Activity), expected);
+        assert_eq!(engine.status().server.phase, "interrupted");
+
+        // Still on battery: only an explicit request resumes the cycle.
+        assert_eq!(engine.handle(Event::AcChanged(false)), vec![]);
+        let commands = engine.handle(ipc(Request::LongSleep { cancel: false }));
+        assert_eq!(
+            commands[0],
+            Command::StartTimer(TimerId::Grace, Duration::ZERO)
+        );
+        assert_eq!(engine.status().server.phase, "grace");
+    }
+
+    /// Scenario 6, exit by critical battery.
+    #[test]
+    fn critical_battery_hibernates_and_keeps_checking() {
+        let mut engine = server_in(Phase::Sleeping);
+        engine.handle(Event::Battery(9));
+        assert_eq!(
+            engine.handle(Event::Resumed),
+            vec![
+                phase("critical"),
+                HIBERNATE,
+                Command::StartTimer(TimerId::AwakeWindow, AWAKE_WINDOW),
+                Command::Broadcast(StateEvent::State {
+                    from: "LongSleep(sleeping)".into(),
+                    to: "LongSleep(checking)".into(),
+                }),
+                phase("checking"),
+            ]
+        );
+
+        // The hibernate did not happen: the window tries again.
+        assert_eq!(
+            engine.handle(Event::Timer(TimerId::AwakeWindow)),
+            vec![
+                phase("critical"),
+                HIBERNATE,
+                Command::StartTimer(TimerId::AwakeWindow, AWAKE_WINDOW),
+            ]
+        );
+
+        // Charged a little above the threshold: back to the cycle.
+        engine.handle(Event::Battery(11));
+        assert_eq!(
+            effects(engine.handle(Event::Timer(TimerId::AwakeWindow))),
+            vec![Command::ScheduleWake(CHECK_INTERVAL)]
+        );
+    }
+
+    #[test]
+    fn critical_hibernate_degrades_to_poweroff() {
+        let mut engine = server_in(Phase::Sleeping);
+        engine.handle(Event::HibernateAvailable(false));
+        engine.handle(Event::Battery(5));
+        let commands = engine.handle(Event::Resumed);
+        assert_eq!(commands[0], phase("critical"));
+        assert_eq!(commands[1], Command::PowerOff);
+    }
+
+    #[test]
+    fn critical_action_poweroff() {
+        let text = format!("{CONFIG}\n{SERVER}").replace(
+            "critical_action = \"hibernate\"",
+            "critical_action = \"poweroff\"",
+        );
+        let mut engine = Engine::new(config_from(&text), PowerSnapshot::on_ac());
+        engine.handle(Event::AcChanged(false));
+        engine.handle(Event::Timer(TimerId::Grace));
+        engine.handle(Event::WakeScheduled(true));
+        engine.handle(Event::Suspending);
+        engine.handle(Event::Battery(10));
+        let commands = engine.handle(Event::Resumed);
+        assert_eq!(commands[0], phase("critical"));
+        assert_eq!(commands[1], Command::PowerOff);
+    }
+
+    /// Scenario 7: three attempts that do not sleep end the cycle.
+    #[test]
+    fn three_failures_abandon_the_cycle() {
+        let mut engine = server_in(Phase::Armed);
+
+        // No RTC: never sleep without an alarm.
+        assert_eq!(
+            engine.handle(Event::WakeScheduled(false)),
+            vec![Command::StartTimer(TimerId::AwakeWindow, AWAKE_WINDOW)]
+        );
+        assert_eq!(engine.state(), State::LongSleep(Phase::Armed));
+        assert_eq!(
+            engine.handle(Event::Timer(TimerId::AwakeWindow)),
+            vec![Command::ScheduleWake(CHECK_INTERVAL)]
+        );
+
+        // logind refused the suspend.
+        engine.handle(Event::WakeScheduled(true));
+        assert_eq!(
+            engine.handle(Event::SleepBlocked(vec![inhibitor("backup")])),
+            vec![Command::StartTimer(TimerId::AwakeWindow, AWAKE_WINDOW)]
+        );
+        engine.handle(Event::Timer(TimerId::AwakeWindow));
+
+        // The suspend request never reached logind (`Activity` from main).
+        let mut expected = back_to_active("bat");
+        expected.push(Command::Broadcast(StateEvent::State {
+            from: "LongSleep(armed)".into(),
+            to: "Active".into(),
+        }));
+        expected.push(phase("idle"));
+        assert_eq!(engine.handle(Event::Activity), expected);
+    }
+
+    #[test]
+    fn power_back_while_armed_ends_the_cycle_without_sleeping() {
+        let mut engine = server_in(Phase::Armed);
+        engine.handle(Event::AcChanged(true));
+        let commands = effects(engine.handle(Event::WakeScheduled(true)));
+        assert_eq!(
+            commands[0],
+            Command::RunHook("systemctl start my-services.target".into())
+        );
+        assert!(!commands.contains(&SUSPEND));
+        assert_eq!(engine.state(), State::Active);
+
+        // The same while waiting out the window after a failed attempt.
+        let mut engine = server_in(Phase::Armed);
+        engine.handle(Event::WakeScheduled(false));
+        engine.handle(Event::AcChanged(true));
+        let commands = effects(engine.handle(Event::Timer(TimerId::AwakeWindow)));
+        assert!(commands.contains(&Command::CancelWake));
+        assert_eq!(engine.state(), State::Active);
+    }
+
+    #[test]
+    fn reload_in_the_cycle_keeps_the_stages_off() {
+        let mut engine = server_in(Phase::Checking);
+        let commands = engine.set_config(server_config(""));
+        assert!(commands.contains(&Command::ReplaceIdleStages(Stages::NONE)));
+        assert_eq!(engine.state(), State::LongSleep(Phase::Checking));
+
+        // In Grace the stages are still the mode's.
+        let mut engine = server_in(Phase::Grace);
+        let commands = engine.set_config(server_config(""));
+        assert!(commands.contains(&Command::ReplaceIdleStages(stages("bat"))));
+    }
+
+    #[test]
+    fn cached_inhibitors_count_as_a_failure() {
+        let mut engine = server_in(Phase::Grace);
+        engine.handle(Event::Inhibitors(vec![inhibitor("backup")]));
+        engine.handle(Event::Timer(TimerId::Grace));
+        assert_eq!(
+            engine.handle(Event::WakeScheduled(true)),
+            vec![Command::StartTimer(TimerId::AwakeWindow, AWAKE_WINDOW)]
+        );
+        engine.handle(Event::Inhibitors(vec![]));
+        engine.handle(Event::Timer(TimerId::AwakeWindow));
+        assert_eq!(engine.handle(Event::WakeScheduled(true)), vec![SUSPEND]);
+    }
+
+    #[test]
+    fn a_late_wake_confirmation_is_ignored() {
+        let mut engine = server_in(Phase::Grace);
+        assert_eq!(engine.handle(Event::WakeScheduled(true)), vec![]);
+        let mut engine = fresh();
+        assert_eq!(engine.handle(Event::WakeScheduled(false)), vec![]);
+    }
+
+    #[test]
+    fn someone_else_suspends_during_the_cycle() {
+        let mut engine = server_in(Phase::Grace);
+        engine.handle(Event::Suspending);
+        assert_eq!(engine.state(), State::LongSleep(Phase::Sleeping));
+        engine.handle(Event::Resumed);
+        assert_eq!(engine.state(), State::LongSleep(Phase::Checking));
+    }
+
+    #[test]
+    fn ipc_long_sleep_cancel() {
+        let mut engine = server_in(Phase::Grace);
+        let mut expected = vec![Command::CancelTimer(TimerId::Grace)];
+        expected.extend(back_to_active("bat"));
+        expected.push(Command::Reply(7, Response::Ok));
+        assert_eq!(
+            effects(engine.handle(ipc(Request::LongSleep { cancel: true }))),
+            expected
+        );
+        assert_eq!(engine.state(), State::Active);
+        assert_eq!(engine.status().server.phase, "idle");
+
+        assert_eq!(
+            engine.handle(ipc(Request::LongSleep { cancel: true })),
+            vec![Command::Reply(
+                7,
+                Response::error("not in the long-sleep cycle")
+            )]
+        );
+
+        let mut engine = server_in(Phase::Checking);
+        let commands = effects(engine.handle(ipc(Request::LongSleep { cancel: true })));
+        assert_eq!(commands[0], Command::CancelTimer(TimerId::AwakeWindow));
+        assert_eq!(engine.state(), State::Active);
+    }
+
+    #[test]
+    fn ipc_long_sleep_refusals() {
+        let mut engine = fresh();
+        assert_eq!(
+            engine.handle(ipc(Request::LongSleep { cancel: false })),
+            vec![Command::Reply(
+                7,
+                Response::error("[server] is not enabled")
+            )]
+        );
+
+        let mut engine = server_in(Phase::Grace);
+        assert_eq!(
+            engine.handle(ipc(Request::LongSleep { cancel: false })),
+            vec![Command::Reply(
+                7,
+                Response::error("already in the long-sleep cycle (grace)")
+            )]
+        );
+
+        let mut engine = server();
+        engine.handle(Event::Idle(Stage::Sleep));
+        assert_eq!(engine.state(), State::Suspending);
+        let commands = engine.handle(ipc(Request::LongSleep { cancel: false }));
+        assert!(matches!(
+            &commands[0],
+            Command::Reply(7, Response::Error(_))
+        ));
+    }
+
+    #[test]
+    fn resume_cycle_after_a_restart() {
+        let mut engine = Engine::new(server_config(""), on_battery(40));
+        assert_eq!(
+            engine.resume_cycle(),
+            vec![
+                Command::ReplaceIdleStages(Stages::NONE),
+                Command::StartTimer(TimerId::AwakeWindow, AWAKE_WINDOW),
+            ]
+        );
+        assert_eq!(engine.state(), State::LongSleep(Phase::Checking));
+        assert_eq!(
+            effects(engine.handle(Event::Timer(TimerId::AwakeWindow))),
+            vec![Command::ScheduleWake(CHECK_INTERVAL)]
+        );
+    }
+
+    #[test]
+    fn shutdown_in_the_cycle_restores_the_screen() {
+        let mut engine = server_in(Phase::Checking);
+        assert_eq!(
+            effects(engine.handle(Event::ShutdownRequested)),
+            vec![Command::Undim, Command::Screen(true), Command::Shutdown]
+        );
     }
 }

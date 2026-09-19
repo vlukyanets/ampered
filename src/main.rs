@@ -14,15 +14,18 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use ampered::backlight::Controller as Backlight;
-use ampered::config::{Config, IdleFallback};
-use ampered::core::{Command, Engine, Event, TimerId};
+use ampered::config::{Config, IdleFallback as IdleFallbackConfig};
+use ampered::core::{Command, Engine, Event, ModeSelection, Phase, State, TimerId};
 use ampered::display::Display;
 use ampered::idle::{self, IdleHandle};
-use ampered::ipc::{self, RequestId, Response, StatusData};
-use ampered::logind::{self, LogindHandle, SavedState, SharedState};
+use ampered::ipc::{self, RequestId, Response, StateEvent, StatusData};
+use ampered::logind::{self, IdleFallback, LogindHandle, SavedState, SharedFallback, SharedState};
+use ampered::notify::Notifier;
 use ampered::power::modes::{self, ModeApplier, SysfsModeSink};
 use ampered::power::supply::{self, FakePowerSource, SupplyHandle, SysfsPowerSource};
 use ampered::power::{PowerSnapshot, PowerSource};
+use ampered::sleep::planner::{self, Planner, Wake};
+use ampered::sleep::rtc::{self, RtcAlarm};
 use ampered::timers::Timers;
 
 const DEFAULT_CONFIG: &str = "/etc/ampered/ampered.toml";
@@ -63,11 +66,13 @@ fn main() -> Result<()> {
     }
 
     init_logging(&config.general.log_level);
+    // Before the runtime: it edits the environment (`notify.rs`).
+    let notifier = Notifier::from_env();
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run(cli, config))
+        .block_on(run(cli, config, notifier))
 }
 
 /// `RUST_LOG` takes priority over `[general] log_level` (`docs/12-configuration.md`).
@@ -80,7 +85,7 @@ fn init_logging(log_level: &str) {
         .init();
 }
 
-async fn run(cli: Cli, config: Config) -> Result<()> {
+async fn run(cli: Cli, config: Config, notifier: Notifier) -> Result<()> {
     let config = Arc::new(config);
     let socket = cli
         .socket
@@ -99,10 +104,8 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
     if !backlight.is_available() {
         degraded.push("backlight".into());
     }
-    let display = Display::from_config(&config);
-    if !display.is_available() {
-        degraded.push("display".into());
-    }
+    let idle = idle::spawn(config.wayland.clone(), events_tx.clone());
+    let display = Display::from_config(&config, idle.clone());
 
     let source: Arc<dyn PowerSource + Send + Sync> = match &cli.fake_power {
         Some(spec) => {
@@ -121,17 +124,33 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
     };
     info!(ac = initial.ac, battery = ?initial.battery, "power at startup");
     let supply = supply::spawn(source, initial.clone(), events_tx.clone());
-    let idle = idle::spawn(config.wayland.clone(), events_tx.clone());
-    if config.idle.fallback == IdleFallback::Logind {
-        warn!("[idle] fallback = \"logind\" is not implemented in v0.1; ext-idle-notify only");
-    }
+    let fallback: SharedFallback = Arc::new(std::sync::Mutex::new(IdleFallback {
+        enabled: config.idle.fallback == IdleFallbackConfig::Logind,
+        compositor: false,
+        sleep_after: None,
+    }));
 
     let saved: SharedState = Arc::new(std::sync::Mutex::new(SavedState::default()));
-    let logind = logind::connect(config.clone(), events_tx.clone(), saved.clone()).await;
+    let logind = logind::connect(
+        config.clone(),
+        events_tx.clone(),
+        saved.clone(),
+        fallback.clone(),
+    )
+    .await;
+    if config.idle.fallback == IdleFallbackConfig::Logind && logind.is_none() {
+        warn!("[idle] fallback = \"logind\" needs logind, which is unavailable");
+    }
     match &logind {
         Some(handle) if !handle.hibernate_available() => degraded.push("hibernate".into()),
         Some(_) => {}
         None => degraded.push("logind".into()),
+    }
+
+    let rtc = rtc_for(&config);
+    if config.server.enabled && rtc.is_none() {
+        error!("no usable RTC alarm; long sleep is disabled");
+        degraded.push("rtc".into());
     }
 
     let mut daemon = Daemon {
@@ -147,14 +166,40 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
         logind,
         saved,
         supply,
+        fallback,
+        rtc,
+        planner: Planner::default(),
+        notifier,
+        last_status: String::new(),
         degraded,
     };
 
-    let mut engine = Engine::new(config, initial);
-    daemon.remember(&engine);
+    let mut engine = Engine::new(config.clone(), initial.clone());
+    if let Some(name) = logind::load_manual_mode()
+        && !engine.restore_manual_mode(&name)
+    {
+        logind::save_manual_mode(None);
+    }
     let mut commands = engine.start();
+    let hibernate = daemon
+        .logind
+        .as_ref()
+        .is_some_and(LogindHandle::hibernate_available);
+    commands.extend(engine.handle(Event::HibernateAvailable(hibernate)));
+    // Restarted in the middle of the cycle, still without power: carry on
+    // from `Checking` (`docs/10-long-sleep-rtc.md`).
+    if config.server.enabled
+        && !initial.ac
+        && logind::load_saved_state().is_some_and(|saved| saved.in_long_sleep())
+    {
+        commands.extend(engine.resume_cycle());
+    }
+    daemon.remember(&engine);
 
     info!(version = env!("CARGO_PKG_VERSION"), "ampered started");
+    daemon.notifier.ready();
+    daemon.notifier.spawn_watchdog();
+    daemon.report(&engine);
 
     loop {
         let mut queue: std::collections::VecDeque<_> = commands.drain(..).collect();
@@ -162,6 +207,7 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
             match daemon.execute(command, &mut engine).await {
                 Outcome::Continue(more) => queue.extend(more),
                 Outcome::Shutdown => {
+                    daemon.notifier.stopping();
                     // The undim must finish before the process does.
                     daemon.backlight.settle().await;
                     daemon.cleanup();
@@ -176,15 +222,26 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
             daemon.cleanup();
             return Ok(());
         };
+        let mut woke_in_cycle = false;
         match &event {
             Event::Timer(id) => daemon.timers.forget(*id),
             // Values read straight after resume can still be the old ones.
-            Event::Resumed => daemon.supply.recheck_after_resume(),
+            Event::Resumed => {
+                daemon.supply.recheck_after_resume();
+                woke_in_cycle = engine.state() == State::LongSleep(Phase::Sleeping);
+            }
+            Event::IdleBackendChanged(connected) => {
+                ampered::locked(&daemon.fallback).compositor = *connected;
+            }
             _ => {}
         }
         debug!(?event, "event");
         commands = engine.handle(event);
+        if woke_in_cycle {
+            commands.extend(daemon.classify_wake(&mut engine));
+        }
         daemon.remember(&engine);
+        daemon.report(&engine);
     }
 }
 
@@ -206,7 +263,21 @@ struct Daemon {
     logind: Option<LogindHandle>,
     saved: SharedState,
     supply: SupplyHandle,
+    fallback: SharedFallback,
+    rtc: Option<Box<dyn RtcAlarm>>,
+    planner: Planner,
+    notifier: Notifier,
+    /// The last `STATUS=` line sent, so unchanged states send nothing.
+    last_status: String,
     degraded: Vec<String>,
+}
+
+/// The RTC is only touched when the server cycle can use it.
+fn rtc_for(config: &Config) -> Option<Box<dyn RtcAlarm>> {
+    if !config.server.enabled {
+        return None;
+    }
+    rtc::from_config(&config.server)
 }
 
 impl Daemon {
@@ -214,7 +285,10 @@ impl Daemon {
         match command {
             Command::StartTimer(id, after) => self.timers.start(id, after),
             Command::CancelTimer(id) => self.timers.cancel(id),
-            Command::ReplaceIdleStages(stages) => self.idle.replace_stages(stages),
+            Command::ReplaceIdleStages(stages) => {
+                ampered::locked(&self.fallback).sleep_after = stages.sleep;
+                self.idle.replace_stages(stages);
+            }
             Command::Suspend { method, force } => {
                 let delivered = match &self.logind {
                     Some(logind) => logind.suspend(method, force),
@@ -229,6 +303,47 @@ impl Daemon {
                     return Outcome::Continue(engine.handle(Event::Activity));
                 }
             }
+            // The engine sleeps only once it hears the alarm is armed (ADR-13).
+            Command::ScheduleWake(after) => {
+                let at = std::time::SystemTime::now() + after;
+                let armed = match &self.rtc {
+                    Some(rtc) => match rtc.set(at) {
+                        Ok(()) => true,
+                        Err(err) => {
+                            error!(%err, at = %humantime::format_rfc3339_seconds(at), "cannot arm the RTC alarm");
+                            false
+                        }
+                    },
+                    None => {
+                        error!("no RTC alarm, the wake cannot be scheduled");
+                        false
+                    }
+                };
+                if armed {
+                    info!(at = %humantime::format_rfc3339_seconds(at), "wake scheduled");
+                    self.planner.armed(at);
+                } else {
+                    self.planner.disarmed();
+                }
+                let commands = engine.handle(Event::WakeScheduled(armed));
+                // The suspend that follows writes `state.json` before the
+                // next event gets here; it must carry the alarm.
+                self.remember(engine);
+                return Outcome::Continue(commands);
+            }
+            Command::CancelWake => {
+                self.planner.disarmed();
+                if let Some(rtc) = &self.rtc
+                    && let Err(err) = rtc.clear()
+                {
+                    warn!(%err, "cannot clear the RTC alarm");
+                }
+            }
+            Command::PowerOff => match &self.logind {
+                Some(logind) => logind.power_off(),
+                None => error!("no logind, cannot power off"),
+            },
+            Command::RunHook(command) => planner::spawn_hook(command),
             Command::Screen(on) => self.display.set(on).await,
             Command::Dim(percent) => self.backlight.dim_to(percent).await,
             Command::Undim => self.backlight.restore().await,
@@ -240,15 +355,50 @@ impl Daemon {
                 ),
             },
             Command::Reply(id, response) => self.reply(id, response),
+            Command::Broadcast(StateEvent::Mode { name }) => {
+                // Only a choice by the user is worth keeping (ADR-15).
+                logind::save_manual_mode(match engine.mode() {
+                    ModeSelection::Manual(_) => Some(name.as_str()),
+                    ModeSelection::Auto(_) => None,
+                });
+                self.server.broadcast(StateEvent::Mode { name });
+            }
+            Command::Broadcast(StateEvent::LongSleep { phase, .. }) => {
+                let next_wake = self.next_wake();
+                self.server
+                    .broadcast(StateEvent::LongSleep { phase, next_wake });
+            }
             Command::Broadcast(event) => self.server.broadcast(event),
             Command::Reload { reply_to } => {
                 return Outcome::Continue(self.reload(reply_to, engine).await);
             }
             Command::Shutdown => return Outcome::Shutdown,
-            // Wired up in the steps that follow (`CLAUDE.md`, implementation order).
-            other => debug!(?other, "command has no executor yet"),
         }
         Outcome::Continue(Vec::new())
+    }
+
+    /// The alarm we armed, or whatever the RTC reports when we did not.
+    fn next_wake(&self) -> Option<String> {
+        self.planner
+            .scheduled()
+            .or_else(|| {
+                self.rtc
+                    .as_ref()
+                    .and_then(|rtc| rtc.pending().ok().flatten())
+            })
+            .map(|at| humantime::format_rfc3339_seconds(at).to_string())
+    }
+
+    /// Right after `Resumed` in the cycle: was it the alarm, or the user?
+    /// A wake by the user is `Activity` to the engine (ADR-13).
+    fn classify_wake(&mut self, engine: &mut Engine) -> Vec<Command> {
+        let wake = self
+            .planner
+            .classify(std::time::SystemTime::now(), self.config.server.alarm_slack);
+        match wake {
+            Wake::Scheduled => Vec::new(),
+            Wake::User => engine.handle(Event::Activity),
+        }
     }
 
     fn reply(&self, id: RequestId, response: Response) {
@@ -267,12 +417,20 @@ impl Daemon {
     /// has no clock at all.
     fn enrich_status(&self, status: &mut StatusData) {
         status.degraded = self.degraded.clone();
+        // The `wlr` backend comes and goes with the compositor.
+        if !self.display.is_available() {
+            status.degraded.push("display".into());
+        }
         status.power.batteries = self.supply.latest().batteries;
         status.backlight = self.backlight.info();
         status.idle.backend = idle::BACKEND.to_string();
         if !status.idle.connected {
             status.degraded.push("wayland".into());
+            if ampered::locked(&self.fallback).engaged() {
+                status.idle.backend = "logind".to_string();
+            }
         }
+        status.server.next_wake = self.next_wake();
         for inhibitor in &mut status.inhibitors {
             inhibitor.expires = self
                 .timers
@@ -284,10 +442,12 @@ impl Daemon {
     /// A rejected config leaves everything as it was (`docs/12-configuration.md`).
     async fn reload(&mut self, reply_to: Option<RequestId>, engine: &mut Engine) -> Vec<Command> {
         info!(path = %self.config_path.display(), "reloading config");
+        self.notifier.reloading();
         let config = match Config::load(&self.config_path) {
             Ok(config) => config,
             Err(err) => {
                 error!(%err, "config rejected, keeping the previous one");
+                self.notifier.ready();
                 if let Some(id) = reply_to {
                     self.server.reply(id, Response::error(err.to_string()));
                 }
@@ -310,26 +470,58 @@ impl Daemon {
             self.mark_degraded("backlight", !self.backlight.is_available());
         }
         if config.display != self.config.display {
-            self.display = Display::from_config(&config);
-            self.mark_degraded("display", !self.display.is_available());
+            self.display = Display::from_config(&config, self.idle.clone());
         }
+        if config.server != self.config.server {
+            self.rtc = rtc_for(&config);
+            self.mark_degraded("rtc", config.server.enabled && self.rtc.is_none());
+        }
+        ampered::locked(&self.fallback).enabled =
+            config.idle.fallback == IdleFallbackConfig::Logind;
 
         let config = Arc::new(config);
         self.config = config.clone();
         let mut commands = engine.set_config(config);
+        self.notifier.ready();
         if let Some(id) = reply_to {
             commands.push(Command::Reply(id, Response::Ok));
         }
         commands
     }
 
+    /// One line for `systemctl status`, kept current as the state moves.
+    fn report(&mut self, engine: &Engine) {
+        if !self.notifier.is_active() {
+            return;
+        }
+        let mode = engine.mode();
+        let status = format!(
+            "{}, mode {} ({})",
+            engine.state(),
+            mode.name(),
+            mode.source()
+        );
+        if status != self.last_status {
+            self.notifier.status(&status);
+            self.last_status = status;
+        }
+    }
+
     /// Keeps `state.json` ready: the delay lock gives us only a few seconds
     /// before a suspend (`docs/09-sleep-logind.md`).
     fn remember(&self, engine: &Engine) {
+        let long_sleep = matches!(
+            engine.state(),
+            State::LongSleep(Phase::Armed | Phase::Sleeping)
+        );
         *ampered::locked(&self.saved) = SavedState {
             state: engine.state().to_string(),
             mode: engine.mode().name().to_string(),
-            reason: "regular".into(),
+            reason: if long_sleep { "long-sleep" } else { "regular" }.into(),
+            scheduled_wake: self
+                .planner
+                .scheduled()
+                .map(|at| humantime::format_rfc3339_seconds(at).to_string()),
             saved_at: None,
         };
     }

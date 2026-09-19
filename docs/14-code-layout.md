@@ -16,10 +16,11 @@
     - `lib.rs` — `pub mod *`, for tests and `amperedctl`
     - `config.rs` — structs + `validate()`
     - `core.rs` — `State`, `Event`, `Command`, `Engine::handle`
-    - `idle.rs` — the `ext-idle-notify-v1` Watcher
-    - `display.rs` — DPMS backends
+    - `idle.rs` — the `ext-idle-notify-v1` Watcher, plus the `wlr-output-power-management` client on the same connection
+    - `display.rs` — DPMS backends; `wlr` goes through `idle::IdleHandle`
     - `backlight.rs` — the sysfs backlight Controller
     - `logind.rs` — the zbus login1 Client
+    - `notify.rs` — `sd_notify` over `NOTIFY_SOCKET`, no libsystemd
     - `ipc.rs` — the NDJSON server + `Request`/`Response` types
     - `power/`
       - `mod.rs`
@@ -62,8 +63,8 @@ depends on none of them — only `main.rs` wires commands to their executors.
 | `nix` (user, signal, fs, socket, net) | setuid for commands, netlink udev, socket group | raw `libc` — less type safety |
 | `tempfile` (dev) | sysfs fake tests | |
 
-`udev` (libudev) was rejected in favour of raw netlink — see ADR-12.
-`sd-notify` (for `Type=notify`) is still open, and is scheduled for v0.2.
+`udev` (libudev) was rejected in favour of raw netlink — see ADR-12, and
+`sd-notify` in favour of a hand-written datagram — see ADR-14.
 
 ## Style
 

@@ -24,8 +24,8 @@ Wants=systemd-logind.service
 Conflicts=power-profiles-daemon.service tlp.service
 
 [Service]
-# Type=notify needs sd_notify(READY=1), which lands in v0.2.
-Type=simple
+Type=notify
+WatchdogSec=60
 ExecStart=/usr/local/bin/ampered --config /etc/ampered/ampered.toml
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
@@ -51,8 +51,11 @@ WantedBy=multi-user.target
 in `$HOME`; but `off_command` might run something from `~/.local/bin` —
 read-only is enough for that. `CAP_SETUID/SETGID` is for running commands
 as the user (`03-privileges.md`), `CAP_NET_ADMIN` for the `power_supply`
-uevent socket (ADR-12). `Type=notify` requires `sd_notify(READY=1)`, which
-isn't implemented yet — the shipped unit uses `Type=simple`.
+uevent socket (ADR-12). `Type=notify`: the daemon sends `READY=1` once the
+socket is listening and the mode is applied, `RELOADING=1`/`READY=1`
+around a reload, `STOPPING=1` on the way out, `STATUS=<state>, mode <name>`
+on every change, and `WATCHDOG=1` at half of `WatchdogSec` (ADR-14).
+Outside systemd there is no `NOTIFY_SOCKET` and all of it is a no-op.
 
 ## `contrib/90-ampered-backlight.rules`
 
@@ -75,4 +78,4 @@ ACTION=="add", SUBSYSTEM=="leds", KERNEL=="*::kbd_backlight", RUN+="/bin/chgrp v
 
 ## Distribution packages
 
-Packaging (AUR, nix, deb) comes after v0.2. For now, `cargo install --path .`.
+Packaging (AUR, nix, deb) is v0.3. For now, `cargo install --path .`.

@@ -12,18 +12,18 @@ The checked items are implemented. Tests: `config`, `core`, `backlight` and
 - [x] `backlight` with dim/restore and `FakeBacklightSink` tests
 - [x] `idle`: `ext-idle-notify-v1` with reconnect
 - [x] `logind`: suspend, inhibitors, delay lock, `state.json`
-- [x] `display`: `command` backend (`wlr` in v0.2)
-- [x] `contrib/ampered.service` with `Type=simple`
+- [x] `display`: `command` backend
+- [x] `contrib/ampered.service`
 
 ## v0.2 — "server"
-- [ ] `[idle] fallback = "logind"` (coarse `IdleHint` polling)
-- [ ] `sleep::rtc` (`wakealarm`, `rtcwake`)
-- [ ] `sleep::planner`: the full cycle, `classify_wake`, `resume_hook`
-- [ ] Hibernate checks at startup
-- [ ] udev netlink for `power_supply`
-- [ ] `display` `wlr` backend
-- [ ] `sd_notify` → `Type=notify`
-- [ ] Persist manual mode (ADR-10)
+- [x] `[idle] fallback = "logind"` (coarse `IdleHint` polling)
+- [x] `sleep::rtc` (`wakealarm`, `rtcwake`), `Command::ScheduleWake`, `next_wake` in status
+- [x] `sleep::planner`: the full cycle, `classify_wake`, `resume_hook`, `amperedctl long-sleep`
+- [x] Hibernate checks at startup: `critical_action = "hibernate"` degrades to `poweroff`
+- [x] udev netlink for `power_supply` (landed in v0.1, ADR-12)
+- [x] `display` `wlr` backend
+- [x] `sd_notify` → `Type=notify`, `WatchdogSec`
+- [x] Persist manual mode (ADR-15)
 
 ## v0.3 — "security and reach"
 - [ ] Split mode: `ampered-agent` + polkit

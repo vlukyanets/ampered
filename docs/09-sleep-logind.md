@@ -33,8 +33,10 @@ At startup: `Inhibit("sleep", "ampered", "save state before sleep", "delay")`
 
 On `PrepareForSleep(true)`:
 
-1. Save `state.json` to `$STATE_DIRECTORY` (`/var/lib/ampered`): FSM
-   state, `pre_dim`, sleep reason, `scheduled_alarm` (for long sleep).
+1. Save `state.json` to `$STATE_DIRECTORY` (`/var/lib/ampered`; the same
+   directory holds the `mode` file from `08-power-modes.md`): FSM
+   state, mode, sleep reason (`regular` / `long-sleep`), `scheduled_wake`
+   (RFC 3339, for long sleep), `saved_at`.
 2. If this is a long sleep, make sure the alarm has been written
    (`10-long-sleep-rtc.md`).
 3. Close the fd → logind proceeds. Take a new fd right after

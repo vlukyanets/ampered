@@ -5,8 +5,8 @@ Wants=systemd-logind.service
 Conflicts=power-profiles-daemon.service tlp.service
 
 [Service]
-# Type=notify needs sd_notify(READY=1), which lands in v0.2 (docs/18-roadmap.md).
-Type=simple
+Type=notify
+WatchdogSec=60
 ExecStart=/usr/local/bin/ampered --config /etc/ampered/ampered.toml
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure

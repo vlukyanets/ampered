@@ -11,7 +11,9 @@ pub mod display;
 pub mod idle;
 pub mod ipc;
 pub mod logind;
+pub mod notify;
 pub mod power;
+pub mod sleep;
 pub mod timers;
 
 /// Locks a mutex, taking the data back even if a panicking task poisoned it.
