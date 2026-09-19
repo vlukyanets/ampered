@@ -75,3 +75,18 @@ in the NUL-separated payload. Reason: no C dependency, and the kernel's uevent
 format is a dozen lines of parsing. Consequences: group 1 needs CAP_NET_ADMIN,
 which the root unit has; without it the actor warns once and lives on the 60s
 poll, so a non-root development run still works.
+
+## ADR-13 — The clock stays out of the FSM: relative wakes, classification in the daemon
+**2026-09.** `Command::ScheduleWake` carries a `Duration` (`check_interval`),
+and `main` adds `now`, arms the RTC, remembers the absolute time and answers
+`Event::WakeScheduled(bool)`; only `true` lets the FSM send `Suspend`. On
+`Resumed` the FSM moves from `LongSleep(Sleeping)` to `LongSleep(Checking)`
+unconditionally; the daemon then compares `now` with the remembered alarm
+(`sleep::planner::classify_wake`) and, for a wake by the user, feeds
+`Event::Activity` — the same event the compositor sends when the lid opens
+during `Checking`. Reason: ADR-2 — the engine has no clock, and a
+`SystemTime` in a command or a classification inside the FSM would need one.
+Consequences: a wake by the user passes through `Checking` for one event,
+with a `StartTimer`/`CancelTimer` pair; one round trip between
+`ScheduleWake` and `Suspend`, which is what keeps a machine from sleeping in
+the cycle with no alarm armed.

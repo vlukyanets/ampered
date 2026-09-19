@@ -44,14 +44,36 @@ trait Manager {
     fn prepare_for_sleep(&self, start: bool) -> zbus::Result<()>;
 }
 
-/// What the daemon writes before going to sleep; v0.2 reads it back to
-/// classify the wake-up (`docs/10-long-sleep-rtc.md`).
+/// What the daemon writes before going to sleep, and reads back at startup
+/// to pick up an interrupted server cycle (`docs/10-long-sleep-rtc.md`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SavedState {
     pub state: String,
     pub mode: String,
+    /// `regular` or `long-sleep`.
     pub reason: String,
+    /// RFC 3339, the alarm armed for the long sleep.
+    pub scheduled_wake: Option<String>,
     pub saved_at: Option<String>,
+}
+
+impl SavedState {
+    pub fn in_long_sleep(&self) -> bool {
+        self.state.starts_with("LongSleep")
+    }
+}
+
+/// The state saved before the last sleep, if the file is there and readable.
+pub fn load_saved_state() -> Option<SavedState> {
+    let path = state_path();
+    let text = std::fs::read_to_string(&path).ok()?;
+    match serde_json::from_str(&text) {
+        Ok(state) => Some(state),
+        Err(err) => {
+            warn!(path = %path.display(), %err, "ignoring an unreadable state file");
+            None
+        }
+    }
 }
 
 pub type SharedState = Arc<Mutex<SavedState>>;

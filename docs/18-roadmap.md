@@ -18,7 +18,7 @@ The checked items are implemented. Tests: `config`, `core`, `backlight` and
 ## v0.2 — "server"
 - [ ] `[idle] fallback = "logind"` (coarse `IdleHint` polling)
 - [x] `sleep::rtc` (`wakealarm`, `rtcwake`), `Command::ScheduleWake`, `next_wake` in status
-- [ ] `sleep::planner`: the full cycle, `classify_wake`, `resume_hook`
+- [x] `sleep::planner`: the full cycle, `classify_wake`, `resume_hook`, `amperedctl long-sleep`
 - [ ] Hibernate checks at startup
 - [ ] udev netlink for `power_supply`
 - [ ] `display` `wlr` backend

@@ -41,6 +41,7 @@ enum Event {
     IdleBackendChanged(bool),     // compositor connected/lost
     Inhibitors(Vec<Inhibitor>),   // refreshed logind view (ADR-11)
     SleepBlocked(Vec<Inhibitor>), // a suspend attempt was refused (ADR-11)
+    WakeScheduled(bool),          // the RTC alarm for ScheduleWake is armed, or not (ADR-13)
     ReloadRequested,
     ShutdownRequested,
 }
@@ -55,7 +56,9 @@ enum Command {
     ApplyMode(String),
     ReplaceIdleStages(Stages),    // None = disable all
     Suspend { method, force },
-    ScheduleWake(SystemTime),
+    PowerOff,
+    ScheduleWake(Duration),       // relative: the FSM has no clock (ADR-13)
+    CancelWake,
     RunHook(String),
     StartTimer(TimerId, Duration), CancelTimer(TimerId),
     Reply(RequestId, Response),
@@ -82,10 +85,11 @@ enum Command {
 | Suspending | Activity | logind refused / race | Active | Undim, Screen(true) |
 | Sleeping | Resumed | — | Active | Undim, Screen(true), ReplaceIdleStages |
 | * | AcChanged(x) | auto mode | — | ApplyMode, ReplaceIdleStages |
-| Active/Dimmed/ScreenOff | AcChanged(false) | server.enabled | LongSleep(Grace) | StartTimer(Grace) |
+| Active/Dimmed/ScreenOff | AcChanged(false) | server.enabled, trigger=ac_lost | LongSleep(Grace) | StartTimer(Grace) |
 | LongSleep(Grace) | AcChanged(true) | — | Active | CancelTimer(Grace) |
-| LongSleep(Grace) | Timer(Grace) | — | LongSleep(Armed) | ScheduleWake, Suspend |
-| LongSleep(*) | Ipc(LongSleep{cancel}) | — | Active | CancelTimer(*) |
+| LongSleep(Grace) | Timer(Grace) | — | LongSleep(Armed) | ReplaceIdleStages(None), ScheduleWake |
+| LongSleep(Armed) | WakeScheduled(true) | — | LongSleep(Armed) | Suspend |
+| LongSleep(*) | Ipc(LongSleep{cancel}) | — | Active | CancelTimer(*), CancelWake, Undim, Screen(true), ReplaceIdleStages |
 | * | Ipc(Mode(name)) | — | — | ApplyMode, ReplaceIdleStages, Reply |
 | * | ReloadRequested | — | — | Reload |
 | * | ShutdownRequested | — | — | Undim, Screen(true), Shutdown |
@@ -99,7 +103,8 @@ The full set of `LongSleep` transitions is in `10-long-sleep-rtc.md`.
   if `pre_dim` is empty — `backlight` decides what to do on its own
   (`05-backlight.md`).
 - `Suspend` is only sent from a state where the machine is still awake
-  (`Active`, `Dimmed`, `ScreenOff`), from `LongSleep(Armed)`, or via
+  (`Active`, `Dimmed`, `ScreenOff`), from `LongSleep(Armed)` after
+  `WakeScheduled(true)` — never without an armed alarm — or via
   `Ipc(Sleep)` from any state. Normally it is `ScreenOff`; the earlier states
   are reachable when the stages before `sleep` are disabled, or when a
   compositor restart delivers `idled` for `sleep` first

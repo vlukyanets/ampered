@@ -22,7 +22,7 @@ planner. See the component table below for exactly what each side does.
 | `power::modes` | Applying a mode | `Command::ApplyMode` | sysfs |
 | `logind` | `Suspend`, `Hibernate`, `PrepareForSleep`, `ListInhibitors`, delay lock | D-Bus | `Event::Suspending`, `Event::Resumed` |
 | `sleep::rtc` | RTC alarm (`wakealarm` / `rtcwake`) | `Command::ScheduleWake` | RTC |
-| `sleep::planner` | Server cycle | events | `Event::LongSleepTick` and others |
+| `sleep::planner` | Wake classification, `resume_hook` | `Command::ScheduleWake`, `Event::Resumed` | `Event::Activity` for a wake by the user, `sh -c` |
 | `ipc` | NDJSON server over a Unix socket; `amperedctl` — a separate binary | socket | `Event::Ipc(req)` |
 
 ## Key flows
@@ -48,7 +48,9 @@ planner. See the component table below for exactly what each side does.
 1. logind sends `PrepareForSleep(false)` → `Event::Resumed`.
 2. `Engine` → `Active`, `Command::Undim`, `Command::Screen(true)`,
    `Command::ReplaceIdleStages` (the compositor may have lost notifications).
-3. If it was in `LongSleep`, the planner classifies the wake-up.
+3. If it was in `LongSleep`, the FSM goes to `LongSleep(Checking)` instead,
+   and the planner classifies the wake-up: a wake by the user becomes
+   `Event::Activity`, which ends the cycle (`10-long-sleep-rtc.md`).
 
 ## Failure handling
 

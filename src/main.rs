@@ -15,14 +15,15 @@ use tracing::{debug, error, info, warn};
 
 use ampered::backlight::Controller as Backlight;
 use ampered::config::{Config, IdleFallback};
-use ampered::core::{Command, Engine, Event, TimerId};
+use ampered::core::{Command, Engine, Event, Phase, State, TimerId};
 use ampered::display::Display;
 use ampered::idle::{self, IdleHandle};
-use ampered::ipc::{self, RequestId, Response, StatusData};
+use ampered::ipc::{self, RequestId, Response, StateEvent, StatusData};
 use ampered::logind::{self, LogindHandle, SavedState, SharedState};
 use ampered::power::modes::{self, ModeApplier, SysfsModeSink};
 use ampered::power::supply::{self, FakePowerSource, SupplyHandle, SysfsPowerSource};
 use ampered::power::{PowerSnapshot, PowerSource};
+use ampered::sleep::planner::{self, Planner, Wake};
 use ampered::sleep::rtc::{self, RtcAlarm};
 use ampered::timers::Timers;
 
@@ -155,12 +156,21 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
         saved,
         supply,
         rtc,
+        planner: Planner::default(),
         degraded,
     };
 
-    let mut engine = Engine::new(config, initial);
-    daemon.remember(&engine);
+    let mut engine = Engine::new(config.clone(), initial.clone());
     let mut commands = engine.start();
+    // Restarted in the middle of the cycle, still without power: carry on
+    // from `Checking` (`docs/10-long-sleep-rtc.md`).
+    if config.server.enabled
+        && !initial.ac
+        && logind::load_saved_state().is_some_and(|saved| saved.in_long_sleep())
+    {
+        commands.extend(engine.resume_cycle());
+    }
+    daemon.remember(&engine);
 
     info!(version = env!("CARGO_PKG_VERSION"), "ampered started");
 
@@ -184,14 +194,21 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
             daemon.cleanup();
             return Ok(());
         };
+        let mut woke_in_cycle = false;
         match &event {
             Event::Timer(id) => daemon.timers.forget(*id),
             // Values read straight after resume can still be the old ones.
-            Event::Resumed => daemon.supply.recheck_after_resume(),
+            Event::Resumed => {
+                daemon.supply.recheck_after_resume();
+                woke_in_cycle = engine.state() == State::LongSleep(Phase::Sleeping);
+            }
             _ => {}
         }
         debug!(?event, "event");
         commands = engine.handle(event);
+        if woke_in_cycle {
+            commands.extend(daemon.classify_wake(&mut engine));
+        }
         daemon.remember(&engine);
     }
 }
@@ -215,6 +232,7 @@ struct Daemon {
     saved: SharedState,
     supply: SupplyHandle,
     rtc: Option<Box<dyn RtcAlarm>>,
+    planner: Planner,
     degraded: Vec<String>,
 }
 
@@ -246,14 +264,47 @@ impl Daemon {
                     return Outcome::Continue(engine.handle(Event::Activity));
                 }
             }
-            Command::ScheduleWake(at) => match &self.rtc {
-                Some(rtc) => {
-                    if let Err(err) = rtc.set(at) {
-                        error!(%err, at = %humantime::format_rfc3339_seconds(at), "cannot arm the RTC alarm");
+            // The engine sleeps only once it hears the alarm is armed (ADR-13).
+            Command::ScheduleWake(after) => {
+                let at = std::time::SystemTime::now() + after;
+                let armed = match &self.rtc {
+                    Some(rtc) => match rtc.set(at) {
+                        Ok(()) => true,
+                        Err(err) => {
+                            error!(%err, at = %humantime::format_rfc3339_seconds(at), "cannot arm the RTC alarm");
+                            false
+                        }
+                    },
+                    None => {
+                        error!("no RTC alarm, the wake cannot be scheduled");
+                        false
                     }
+                };
+                if armed {
+                    info!(at = %humantime::format_rfc3339_seconds(at), "wake scheduled");
+                    self.planner.armed(at);
+                } else {
+                    self.planner.disarmed();
                 }
-                None => error!("no RTC alarm, the wake cannot be scheduled"),
+                let commands = engine.handle(Event::WakeScheduled(armed));
+                // The suspend that follows writes `state.json` before the
+                // next event gets here; it must carry the alarm.
+                self.remember(engine);
+                return Outcome::Continue(commands);
+            }
+            Command::CancelWake => {
+                self.planner.disarmed();
+                if let Some(rtc) = &self.rtc
+                    && let Err(err) = rtc.clear()
+                {
+                    warn!(%err, "cannot clear the RTC alarm");
+                }
+            }
+            Command::PowerOff => match &self.logind {
+                Some(logind) => logind.power_off(),
+                None => error!("no logind, cannot power off"),
             },
+            Command::RunHook(command) => planner::spawn_hook(command),
             Command::Screen(on) => self.display.set(on).await,
             Command::Dim(percent) => self.backlight.dim_to(percent).await,
             Command::Undim => self.backlight.restore().await,
@@ -265,15 +316,42 @@ impl Daemon {
                 ),
             },
             Command::Reply(id, response) => self.reply(id, response),
+            Command::Broadcast(StateEvent::LongSleep { phase, .. }) => {
+                let next_wake = self.next_wake();
+                self.server
+                    .broadcast(StateEvent::LongSleep { phase, next_wake });
+            }
             Command::Broadcast(event) => self.server.broadcast(event),
             Command::Reload { reply_to } => {
                 return Outcome::Continue(self.reload(reply_to, engine).await);
             }
             Command::Shutdown => return Outcome::Shutdown,
-            // Wired up in the steps that follow (`CLAUDE.md`, implementation order).
-            other => debug!(?other, "command has no executor yet"),
         }
         Outcome::Continue(Vec::new())
+    }
+
+    /// The alarm we armed, or whatever the RTC reports when we did not.
+    fn next_wake(&self) -> Option<String> {
+        self.planner
+            .scheduled()
+            .or_else(|| {
+                self.rtc
+                    .as_ref()
+                    .and_then(|rtc| rtc.pending().ok().flatten())
+            })
+            .map(|at| humantime::format_rfc3339_seconds(at).to_string())
+    }
+
+    /// Right after `Resumed` in the cycle: was it the alarm, or the user?
+    /// A wake by the user is `Activity` to the engine (ADR-13).
+    fn classify_wake(&mut self, engine: &mut Engine) -> Vec<Command> {
+        let wake = self
+            .planner
+            .classify(std::time::SystemTime::now(), self.config.server.alarm_slack);
+        match wake {
+            Wake::Scheduled => Vec::new(),
+            Wake::User => engine.handle(Event::Activity),
+        }
     }
 
     fn reply(&self, id: RequestId, response: Response) {
@@ -298,11 +376,7 @@ impl Daemon {
         if !status.idle.connected {
             status.degraded.push("wayland".into());
         }
-        status.server.next_wake = self
-            .rtc
-            .as_ref()
-            .and_then(|rtc| rtc.pending().ok().flatten())
-            .map(|at| humantime::format_rfc3339_seconds(at).to_string());
+        status.server.next_wake = self.next_wake();
         for inhibitor in &mut status.inhibitors {
             inhibitor.expires = self
                 .timers
@@ -360,10 +434,18 @@ impl Daemon {
     /// Keeps `state.json` ready: the delay lock gives us only a few seconds
     /// before a suspend (`docs/09-sleep-logind.md`).
     fn remember(&self, engine: &Engine) {
+        let long_sleep = matches!(
+            engine.state(),
+            State::LongSleep(Phase::Armed | Phase::Sleeping)
+        );
         *ampered::locked(&self.saved) = SavedState {
             state: engine.state().to_string(),
             mode: engine.mode().name().to_string(),
-            reason: "regular".into(),
+            reason: if long_sleep { "long-sleep" } else { "regular" }.into(),
+            scheduled_wake: self
+                .planner
+                .scheduled()
+                .map(|at| humantime::format_rfc3339_seconds(at).to_string()),
             saved_at: None,
         };
     }
