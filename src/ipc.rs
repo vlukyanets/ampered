@@ -19,6 +19,9 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
+use crate::agent::{AgentEvent, AgentLink};
+use crate::core::Event;
+
 /// Identifies an in-flight request so `Command::Reply` can find its connection.
 pub type RequestId = u64;
 
@@ -57,6 +60,8 @@ pub enum Request {
     },
     Reload,
     Subscribe,
+    /// `ampered-agent` registering (`docs/11-ipc-cli.md`, "The agent stream").
+    Agent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -288,7 +293,8 @@ impl Server {
 pub async fn listen(
     path: &Path,
     group: &str,
-    events: mpsc::Sender<crate::core::Event>,
+    events: mpsc::Sender<Event>,
+    agent: Option<AgentLink>,
 ) -> io::Result<Server> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -329,8 +335,9 @@ pub async fn listen(
                 Ok((stream, _)) => {
                     let server = accepting.clone();
                     let events = events.clone();
+                    let agent = agent.clone();
                     tokio::spawn(async move {
-                        if let Err(err) = serve_connection(stream, server, events).await {
+                        if let Err(err) = serve_connection(stream, server, events, agent).await {
                             debug!(%err, "ipc connection closed");
                         }
                     });
@@ -349,8 +356,10 @@ pub async fn listen(
 async fn serve_connection(
     stream: UnixStream,
     server: Server,
-    events: mpsc::Sender<crate::core::Event>,
+    events: mpsc::Sender<Event>,
+    agent: Option<AgentLink>,
 ) -> io::Result<()> {
+    let uid = stream.peer_cred().ok().map(|cred| cred.uid());
     let (read_half, mut write_half) = stream.into_split();
     let mut lines = BufReader::new(read_half).lines();
 
@@ -374,16 +383,24 @@ async fn serve_connection(
             write_line(&mut write_half, &Response::Ok).await?;
             return stream_events(lines, write_half, server.broadcast.subscribe()).await;
         }
+        if matches!(request, Request::Agent) {
+            let Some(link) = agent else {
+                write_line(
+                    &mut write_half,
+                    &Response::error("[general] privilege is not \"split\""),
+                )
+                .await?;
+                return Ok(());
+            };
+            write_line(&mut write_half, &Response::Ok).await?;
+            return serve_agent(lines, write_half, link, uid, events).await;
+        }
 
         let id = server.take_id();
         let (reply_tx, reply_rx) = oneshot::channel();
         crate::locked(&server.pending).insert(id, reply_tx);
 
-        if events
-            .send(crate::core::Event::Ipc(id, request))
-            .await
-            .is_err()
-        {
+        if events.send(Event::Ipc(id, request)).await.is_err() {
             crate::locked(&server.pending).remove(&id);
             write_line(&mut write_half, &Response::error("daemon is shutting down")).await?;
             return Ok(());
@@ -427,6 +444,72 @@ async fn stream_events(
     }
 }
 
+/// The agent stream: ops out, events in, until either side hangs up
+/// (`docs/11-ipc-cli.md`). Losing the current agent is the compositor
+/// going away as far as the engine is concerned.
+async fn serve_agent(
+    mut lines: tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    mut write_half: tokio::net::unix::OwnedWriteHalf,
+    link: AgentLink,
+    uid: Option<u32>,
+    events: mpsc::Sender<Event>,
+) -> io::Result<()> {
+    let (id, mut ops) = link.register(uid);
+    let result = loop {
+        tokio::select! {
+            line = lines.next_line() => match line {
+                Ok(Some(line)) => {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let event: AgentEvent = match serde_json::from_str(&line) {
+                        Ok(event) => event,
+                        Err(err) => {
+                            warn!(%err, line, "bad line from the agent");
+                            continue;
+                        }
+                    };
+                    link.note(id, &event);
+                    let event = match event {
+                        AgentEvent::Idle { stage } => Some(Event::Idle(stage)),
+                        AgentEvent::Activity => Some(Event::Activity),
+                        AgentEvent::Backend { connected, .. } => {
+                            Some(Event::IdleBackendChanged(connected))
+                        }
+                        AgentEvent::Display { .. } => None,
+                    };
+                    if let Some(event) = event
+                        && events.send(event).await.is_err()
+                    {
+                        break Ok(());
+                    }
+                }
+                Ok(None) => break Ok(()),
+                Err(err) => break Err(err),
+            },
+            op = ops.recv() => match op {
+                Some(op) => {
+                    let mut line = serde_json::to_string(&op).unwrap_or_default();
+                    line.push('\n');
+                    if let Err(err) = write_half.write_all(line.as_bytes()).await {
+                        break Err(err);
+                    }
+                    if let Err(err) = write_half.flush().await {
+                        break Err(err);
+                    }
+                }
+                // Replaced by a newer agent.
+                None => break Ok(()),
+            },
+        }
+    };
+    if link.unregister(id) {
+        let _ = events.send(Event::IdleBackendChanged(false)).await;
+        let _ = events.send(Event::Activity).await;
+    }
+    result
+}
+
 async fn write_line(
     write_half: &mut tokio::net::unix::OwnedWriteHalf,
     response: &Response,
@@ -435,4 +518,158 @@ async fn write_line(
     line.push('\n');
     write_half.write_all(line.as_bytes()).await?;
     write_half.flush().await
+}
+
+#[cfg(test)]
+mod tests {
+    //! The server on a real socket in a tempdir; the group lookup warns as a
+    //! non-root user and that is fine.
+
+    use super::*;
+    use crate::agent::AgentOp;
+    use crate::config::Display as DisplayConfig;
+    use crate::core::{Stage, Stages};
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    async fn client(
+        path: &Path,
+    ) -> (
+        tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+        tokio::net::unix::OwnedWriteHalf,
+    ) {
+        let stream = UnixStream::connect(path).await.unwrap();
+        let (read, write) = stream.into_split();
+        (BufReader::new(read).lines(), write)
+    }
+
+    async fn send(write: &mut tokio::net::unix::OwnedWriteHalf, line: &str) {
+        write
+            .write_all(format!("{line}\n").as_bytes())
+            .await
+            .unwrap();
+        write.flush().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn request_reply_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ampered.sock");
+        let (events_tx, mut events_rx) = mpsc::channel(8);
+        let server = listen(&path, "", events_tx, None).await.unwrap();
+
+        let (mut lines, mut write) = client(&path).await;
+        send(&mut write, r#"{"cmd":"status"}"#).await;
+        let Some(Event::Ipc(id, Request::Status)) = events_rx.recv().await else {
+            panic!("expected a status request");
+        };
+        server.reply(id, Response::Ok);
+        assert_eq!(lines.next_line().await.unwrap().unwrap(), r#"{"ok":true}"#);
+
+        send(&mut write, "not json").await;
+        let line = lines.next_line().await.unwrap().unwrap();
+        assert!(line.contains("bad request"), "{line}");
+
+        // No split mode: the agent is turned away.
+        send(&mut write, r#"{"cmd":"agent"}"#).await;
+        let line = lines.next_line().await.unwrap().unwrap();
+        assert!(line.contains("privilege"), "{line}");
+    }
+
+    #[tokio::test]
+    async fn the_agent_stream() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ampered.sock");
+        let (events_tx, mut events_rx) = mpsc::channel(8);
+        let link = AgentLink::new(&DisplayConfig::default());
+        let _server = listen(&path, "", events_tx, Some(link.clone()))
+            .await
+            .unwrap();
+        let stages = Stages {
+            dim: Some(Duration::from_secs(120)),
+            ..Stages::NONE
+        };
+        link.replace_stages(stages);
+
+        let (mut lines, mut write) = client(&path).await;
+        send(&mut write, r#"{"cmd":"agent"}"#).await;
+        assert_eq!(lines.next_line().await.unwrap().unwrap(), r#"{"ok":true}"#);
+        // The replay: display, then the stages cached before the agent came.
+        let display: AgentOp =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(display, AgentOp::Display(DisplayConfig::default()));
+        let replayed: AgentOp =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(replayed, AgentOp::stages(stages));
+
+        // Events go up; the status side notes them.
+        send(
+            &mut write,
+            r#"{"event":"backend","name":"ext-idle-notify","connected":true}"#,
+        )
+        .await;
+        assert_eq!(
+            events_rx.recv().await,
+            Some(Event::IdleBackendChanged(true))
+        );
+        send(&mut write, r#"{"event":"display","available":true}"#).await;
+        send(&mut write, r#"{"event":"idle","stage":"dim"}"#).await;
+        assert_eq!(events_rx.recv().await, Some(Event::Idle(Stage::Dim)));
+        assert!(link.is_connected());
+        assert!(link.display_available());
+        assert_eq!(link.backend(), "ext-idle-notify");
+
+        // Commands go down.
+        link.set_screen(false);
+        let op: AgentOp = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(op, AgentOp::Screen { on: false });
+
+        // A bad line is skipped, the stream lives on.
+        send(&mut write, "garbage").await;
+        send(&mut write, r#"{"event":"activity"}"#).await;
+        assert_eq!(events_rx.recv().await, Some(Event::Activity));
+
+        // The agent hangs up: the compositor is gone as far as the engine knows.
+        drop(write);
+        drop(lines);
+        assert_eq!(
+            events_rx.recv().await,
+            Some(Event::IdleBackendChanged(false))
+        );
+        assert_eq!(events_rx.recv().await, Some(Event::Activity));
+        assert!(!link.is_connected());
+    }
+
+    #[tokio::test]
+    async fn a_second_agent_takes_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ampered.sock");
+        let (events_tx, mut events_rx) = mpsc::channel(8);
+        let link = AgentLink::new(&DisplayConfig::default());
+        let _server = listen(&path, "", events_tx, Some(link.clone()))
+            .await
+            .unwrap();
+
+        let (mut first_lines, mut first_write) = client(&path).await;
+        send(&mut first_write, r#"{"cmd":"agent"}"#).await;
+        for _ in 0..3 {
+            first_lines.next_line().await.unwrap().unwrap();
+        }
+
+        let (mut second_lines, mut second_write) = client(&path).await;
+        send(&mut second_write, r#"{"cmd":"agent"}"#).await;
+        for _ in 0..3 {
+            second_lines.next_line().await.unwrap().unwrap();
+        }
+        // The first stream is closed by the daemon, with no event: the new
+        // agent is in charge.
+        assert_eq!(first_lines.next_line().await.unwrap(), None);
+        assert!(link.is_connected());
+
+        link.set_screen(true);
+        let op: AgentOp =
+            serde_json::from_str(&second_lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(op, AgentOp::Screen { on: true });
+        send(&mut second_write, r#"{"event":"activity"}"#).await;
+        assert_eq!(events_rx.recv().await, Some(Event::Activity));
+    }
 }

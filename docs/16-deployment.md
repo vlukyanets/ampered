@@ -57,6 +57,30 @@ around a reload, `STOPPING=1` on the way out, `STATUS=<state>, mode <name>`
 on every change, and `WATCHDOG=1` at half of `WatchdogSec` (ADR-14).
 Outside systemd there is no `NOTIFY_SOCKET` and all of it is a no-op.
 
+## `contrib/ampered-agent.service` (split mode)
+
+A user unit, `systemctl --user enable --now ampered-agent`; the user must
+be in `[general] socket_group`. Set `privilege = "split"` in the daemon's
+config.
+
+```ini
+[Unit]
+Description=ampered session agent
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/local/bin/ampered-agent
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
+```
+
+`XDG_RUNTIME_DIR` and `WAYLAND_DISPLAY` come from the session; the socket
+path is `--socket` (default `/run/ampered/ampered.sock`).
+
 ## `contrib/90-ampered-backlight.rules`
 
 Only for running without root:

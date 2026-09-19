@@ -24,6 +24,7 @@ Exception — `subscribe`: a stream of events until the client disconnects.
 {"cmd":"uninhibit","id":3}
 {"cmd":"reload"}
 {"cmd":"subscribe"}
+{"cmd":"agent"}                            // ampered-agent only, see below
 ```
 
 ## Responses
@@ -63,6 +64,35 @@ After that each line is one of:
 `{"event":"state","from":"Active","to":"Dimmed"}`,
 `{"event":"mode","name":"powersave"}`, `{"event":"power","ac":false}`,
 `{"event":"long-sleep","phase":"armed","next_wake":"..."}`.
+
+### The agent stream
+
+`{"cmd":"agent"}` registers the connection as the session agent
+(`03-privileges.md`, split mode). After the `{"ok":true}` the connection
+is a stream in both directions, one JSON object per line.
+
+Daemon → agent (`op`):
+
+```json
+{"op":"display","backend":"wlr","off_command":null,"on_command":null}   // on registration and reload
+{"op":"stages","dim":"5m","screen_off":"10m","sleep":"30m"}             // "0" = disabled
+{"op":"screen","on":false}
+```
+
+Agent → daemon (`event`), no replies:
+
+```json
+{"event":"idle","stage":"dim"}          // dim | screen_off | sleep
+{"event":"activity"}
+{"event":"backend","name":"ext-idle-notify","connected":true}
+{"event":"display","available":true}
+```
+
+`backend` and `display` feed `status.idle` and `status.degraded`
+(`"wayland"`, `"display"`); with no agent at all `status.degraded` has
+`"agent"`. A second `agent` registration closes the first stream. When the
+stream closes the daemon behaves as if the compositor went away:
+`Event::IdleBackendChanged(false)`, `Event::Activity`.
 
 ## Internal inhibitors
 

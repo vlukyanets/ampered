@@ -11,7 +11,7 @@ use std::time::Duration;
 use tokio::process::Command;
 use tracing::{debug, info, warn};
 
-use crate::config::{Config, DisplayBackend};
+use crate::config::{Config, Display as DisplayConfig, DisplayBackend, Wayland as WaylandConfig};
 use crate::idle::IdleHandle;
 
 /// A compositor helper that hangs must not hang the daemon with it.
@@ -55,11 +55,16 @@ struct SessionUser {
 
 impl Display {
     pub fn from_config(config: &Config, idle: IdleHandle) -> Display {
-        let backend = match config.display.backend {
+        Display::new(&config.display, &config.wayland, idle)
+    }
+
+    /// `wayland` says where the compositor is, for the `command` helper.
+    pub fn new(display: &DisplayConfig, wayland: &WaylandConfig, idle: IdleHandle) -> Display {
+        let backend = match display.backend {
             DisplayBackend::Command => {
                 // Validation guarantees both commands are present.
-                let off = config.display.off_command.clone().unwrap_or_default();
-                let on = config.display.on_command.clone().unwrap_or_default();
+                let off = display.off_command.clone().unwrap_or_default();
+                let on = display.on_command.clone().unwrap_or_default();
                 info!("display backend: command");
                 Backend::Command { off, on }
             }
@@ -69,11 +74,7 @@ impl Display {
             }
             DisplayBackend::Wlr => {
                 // Validation guarantees the pair is complete or absent.
-                let fallback = config
-                    .display
-                    .off_command
-                    .clone()
-                    .zip(config.display.on_command.clone());
+                let fallback = display.off_command.clone().zip(display.on_command.clone());
                 info!(
                     fallback = fallback.is_some(),
                     "display backend: wlr-output-power-management"
@@ -83,7 +84,7 @@ impl Display {
         };
         Display {
             backend,
-            session: Session::discover(&config.wayland.runtime_dir, &config.wayland.display),
+            session: Session::discover(&wayland.runtime_dir, &wayland.display),
             last: None,
         }
     }

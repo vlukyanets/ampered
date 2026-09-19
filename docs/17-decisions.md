@@ -108,3 +108,18 @@ the manual mode; it is written on `amperedctl mode <name>`, removed on
 name in one file needs no store. Consequences: `state.json` stays the
 sleep-only file it was; a name missing from the reloaded config is dropped
 with a `warn!`, never applied blindly.
+
+## ADR-16 — Split mode over the IPC socket, not D-Bus + polkit
+**2026-09.** `ampered-agent` talks to the daemon through the existing
+NDJSON socket (`{"cmd":"agent"}` turns a connection into a two-way stream),
+and is authorized by `[general] socket_group` like every other client.
+Reason: the D-Bus API and polkit rule sketched in `03-privileges.md` would
+add a second bus role (we are a logind client only — `CLAUDE.md`), a policy
+file and a name to register, all to carry four messages between two
+processes we ship together; and the socket group already answers "who may
+tell the daemon to sleep". The agent lives in the same crate as a third
+binary because it reuses `idle` and `display` whole. Consequences: any
+member of the group can register as the agent and feed idle events — the
+same trust the group already has through `amperedctl sleep`; a per-session
+check against logind's active session can be added later without changing
+the protocol. Supersedes the D-Bus sketch in `03-privileges.md`.

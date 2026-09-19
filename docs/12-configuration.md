@@ -10,6 +10,7 @@ Unknown keys are an error (`deny_unknown_fields`).
 |---|---|---|
 | `log_level` | `"info"` | `error`…`trace`; `RUST_LOG` takes priority |
 | `socket` | `"/run/ampered/ampered.sock"` | IPC socket (not re-read on reload) |
+| `privilege` | `"root"` | `root` / `split`: who owns the Wayland connection, see `docs/03-privileges.md` (not re-read on reload) |
 | `socket_group` | `"users"` | Group allowed to write to the socket |
 
 ## `[wayland]`
