@@ -16,8 +16,8 @@
     - `lib.rs` — `pub mod *`, for tests and `amperedctl`
     - `config.rs` — structs + `validate()`
     - `core.rs` — `State`, `Event`, `Command`, `Engine::handle`
-    - `idle.rs` — the `ext-idle-notify-v1` Watcher
-    - `display.rs` — DPMS backends
+    - `idle.rs` — the `ext-idle-notify-v1` Watcher, plus the `wlr-output-power-management` client on the same connection
+    - `display.rs` — DPMS backends; `wlr` goes through `idle::IdleHandle`
     - `backlight.rs` — the sysfs backlight Controller
     - `logind.rs` — the zbus login1 Client
     - `ipc.rs` — the NDJSON server + `Request`/`Response` types

@@ -12,7 +12,7 @@ The checked items are implemented. Tests: `config`, `core`, `backlight` and
 - [x] `backlight` with dim/restore and `FakeBacklightSink` tests
 - [x] `idle`: `ext-idle-notify-v1` with reconnect
 - [x] `logind`: suspend, inhibitors, delay lock, `state.json`
-- [x] `display`: `command` backend (`wlr` in v0.2)
+- [x] `display`: `command` backend
 - [x] `contrib/ampered.service` with `Type=simple`
 
 ## v0.2 — "server"
@@ -21,7 +21,7 @@ The checked items are implemented. Tests: `config`, `core`, `backlight` and
 - [x] `sleep::planner`: the full cycle, `classify_wake`, `resume_hook`, `amperedctl long-sleep`
 - [x] Hibernate checks at startup: `critical_action = "hibernate"` degrades to `poweroff`
 - [x] udev netlink for `power_supply` (landed in v0.1, ADR-12)
-- [ ] `display` `wlr` backend
+- [x] `display` `wlr` backend
 - [ ] `sd_notify` → `Type=notify`
 - [ ] Persist manual mode (ADR-10)
 

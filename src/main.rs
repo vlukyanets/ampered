@@ -101,10 +101,8 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
     if !backlight.is_available() {
         degraded.push("backlight".into());
     }
-    let display = Display::from_config(&config);
-    if !display.is_available() {
-        degraded.push("display".into());
-    }
+    let idle = idle::spawn(config.wayland.clone(), events_tx.clone());
+    let display = Display::from_config(&config, idle.clone());
 
     let source: Arc<dyn PowerSource + Send + Sync> = match &cli.fake_power {
         Some(spec) => {
@@ -123,7 +121,6 @@ async fn run(cli: Cli, config: Config) -> Result<()> {
     };
     info!(ac = initial.ac, battery = ?initial.battery, "power at startup");
     let supply = supply::spawn(source, initial.clone(), events_tx.clone());
-    let idle = idle::spawn(config.wayland.clone(), events_tx.clone());
     let fallback: SharedFallback = Arc::new(std::sync::Mutex::new(IdleFallback {
         enabled: config.idle.fallback == IdleFallbackConfig::Logind,
         compositor: false,
@@ -394,6 +391,10 @@ impl Daemon {
     /// has no clock at all.
     fn enrich_status(&self, status: &mut StatusData) {
         status.degraded = self.degraded.clone();
+        // The `wlr` backend comes and goes with the compositor.
+        if !self.display.is_available() {
+            status.degraded.push("display".into());
+        }
         status.power.batteries = self.supply.latest().batteries;
         status.backlight = self.backlight.info();
         status.idle.backend = idle::BACKEND.to_string();
@@ -441,8 +442,7 @@ impl Daemon {
             self.mark_degraded("backlight", !self.backlight.is_available());
         }
         if config.display != self.config.display {
-            self.display = Display::from_config(&config);
-            self.mark_degraded("display", !self.display.is_available());
+            self.display = Display::from_config(&config, self.idle.clone());
         }
         if config.server != self.config.server {
             self.rtc = rtc_for(&config);
