@@ -378,3 +378,298 @@ fn interpolate(from: u32, to: u32, step: u32, steps: u32) -> u32 {
     let to = to as i64;
     (from + (to - from) * step as i64 / steps as i64) as u32
 }
+
+#[cfg(test)]
+mod tests {
+    //! `docs/15-testing.md`, "Backlight". The sink is in memory; the sysfs
+    //! layout is only built (in a tempdir) for the device selection tests.
+
+    use std::sync::Mutex;
+
+    use super::*;
+
+    /// A panel that remembers what was written to it.
+    struct FakeBacklightSink {
+        value: Mutex<u32>,
+        max: u32,
+        fail_reads: AtomicBool,
+    }
+
+    impl FakeBacklightSink {
+        fn new(value: u32, max: u32) -> Arc<FakeBacklightSink> {
+            Arc::new(FakeBacklightSink {
+                value: Mutex::new(value),
+                max,
+                fail_reads: AtomicBool::new(false),
+            })
+        }
+
+        /// What `brightnessctl` or the compositor would do behind our back.
+        fn set_externally(&self, value: u32) {
+            *crate::locked(&self.value) = value;
+        }
+
+        fn value(&self) -> u32 {
+            *crate::locked(&self.value)
+        }
+    }
+
+    impl BacklightSink for FakeBacklightSink {
+        fn read(&self) -> io::Result<u32> {
+            if self.fail_reads.load(Ordering::Relaxed) {
+                return Err(io::Error::other("EIO"));
+            }
+            Ok(self.value())
+        }
+
+        fn write(&self, value: u32) -> io::Result<()> {
+            *crate::locked(&self.value) = value;
+            Ok(())
+        }
+
+        fn max(&self) -> u32 {
+            self.max
+        }
+
+        fn name(&self) -> &str {
+            "fake"
+        }
+    }
+
+    fn config(transition: Duration, min_percent: u8) -> BacklightConfig {
+        BacklightConfig {
+            device: "auto".into(),
+            dim_percent: 10,
+            transition,
+            min_percent,
+        }
+    }
+
+    fn controller(sink: &Arc<FakeBacklightSink>) -> Controller {
+        let sink = sink.clone() as Arc<dyn BacklightSink>;
+        Controller::new(&config(Duration::ZERO, 1), Some(sink))
+    }
+
+    #[tokio::test]
+    async fn dim_then_restore_returns_to_the_previous_value() {
+        let sink = FakeBacklightSink::new(800, 1000);
+        let mut controller = controller(&sink);
+
+        controller.dim_to(10).await;
+        assert_eq!(sink.value(), 100);
+        assert_eq!(controller.info().percent, Some(10));
+        assert_eq!(controller.info().pre_dim, Some(80));
+
+        controller.restore().await;
+        assert_eq!(sink.value(), 800);
+        assert_eq!(controller.info().pre_dim, None);
+    }
+
+    /// ADR-9: the user pressed the brightness keys while dimmed.
+    #[tokio::test]
+    async fn external_change_while_dimmed_is_left_alone() {
+        let sink = FakeBacklightSink::new(800, 1000);
+        let mut controller = controller(&sink);
+
+        controller.dim_to(10).await;
+        sink.set_externally(500);
+
+        controller.restore().await;
+        assert_eq!(sink.value(), 500);
+        assert_eq!(controller.info().pre_dim, None);
+        // The controller is Active again: a further restore is a no-op.
+        controller.restore().await;
+        assert_eq!(sink.value(), 500);
+    }
+
+    #[tokio::test]
+    async fn min_percent_keeps_the_panel_on() {
+        let sink = FakeBacklightSink::new(800, 1000);
+        let sink_dyn = sink.clone() as Arc<dyn BacklightSink>;
+        let mut controller = Controller::new(&config(Duration::ZERO, 5), Some(sink_dyn));
+
+        controller.dim_to(0).await;
+        assert_eq!(sink.value(), 50);
+        controller.restore().await;
+        assert_eq!(sink.value(), 800);
+    }
+
+    #[tokio::test]
+    async fn restore_while_active_is_a_no_op() {
+        let sink = FakeBacklightSink::new(800, 1000);
+        let mut controller = controller(&sink);
+        controller.restore().await;
+        assert_eq!(sink.value(), 800);
+        assert_eq!(controller.info().pre_dim, None);
+    }
+
+    #[tokio::test]
+    async fn dim_is_idempotent() {
+        let sink = FakeBacklightSink::new(800, 1000);
+        let mut controller = controller(&sink);
+
+        controller.dim_to(10).await;
+        controller.dim_to(10).await;
+        controller.dim_to(50).await;
+        // `pre_dim` still holds the user's value, not the dimmed one.
+        assert_eq!(sink.value(), 100);
+        assert_eq!(controller.info().pre_dim, Some(80));
+
+        controller.restore().await;
+        assert_eq!(sink.value(), 800);
+    }
+
+    #[tokio::test]
+    async fn unreadable_panel_is_not_dimmed() {
+        let sink = FakeBacklightSink::new(800, 1000);
+        let mut controller = controller(&sink);
+        sink.fail_reads.store(true, Ordering::Relaxed);
+
+        controller.dim_to(10).await;
+        assert_eq!(sink.value(), 800);
+        assert_eq!(controller.info().pre_dim, None);
+
+        // Readable again: the next dim works normally.
+        sink.fail_reads.store(false, Ordering::Relaxed);
+        controller.dim_to(10).await;
+        assert_eq!(sink.value(), 100);
+    }
+
+    #[tokio::test]
+    async fn no_device_is_a_no_op() {
+        let mut controller = Controller::new(&config(Duration::ZERO, 1), None);
+        assert!(!controller.is_available());
+        controller.dim_to(10).await;
+        controller.restore().await;
+        assert_eq!(controller.info(), BacklightInfo::default());
+    }
+
+    #[tokio::test]
+    async fn fade_reaches_the_target_and_back() {
+        let sink = FakeBacklightSink::new(800, 1000);
+        let sink_dyn = sink.clone() as Arc<dyn BacklightSink>;
+        let mut controller = Controller::new(&config(STEP * 3, 1), Some(sink_dyn));
+
+        controller.dim_to(10).await;
+        controller.settle().await;
+        assert_eq!(sink.value(), 100);
+
+        controller.restore().await;
+        controller.settle().await;
+        assert_eq!(sink.value(), 800);
+    }
+
+    /// `restore` in the middle of a dim fade: the fade is cancelled and the
+    /// comparison uses the last step we wrote, not the final target.
+    #[tokio::test]
+    async fn restore_interrupts_a_running_fade() {
+        let sink = FakeBacklightSink::new(800, 1000);
+        let sink_dyn = sink.clone() as Arc<dyn BacklightSink>;
+        let mut controller = Controller::new(&config(STEP * 50, 1), Some(sink_dyn));
+
+        controller.dim_to(10).await;
+        controller.restore().await;
+        controller.settle().await;
+        assert_eq!(sink.value(), 800);
+        assert_eq!(controller.info().pre_dim, None);
+    }
+
+    #[tokio::test]
+    async fn reconfigure_keeps_the_dim_unless_the_device_changes() {
+        let sink = FakeBacklightSink::new(800, 1000);
+        let mut controller = controller(&sink);
+        controller.dim_to(10).await;
+
+        controller.reconfigure(&config(Duration::ZERO, 20)).await;
+        assert_eq!(controller.info().pre_dim, Some(80));
+        controller.restore().await;
+        assert_eq!(sink.value(), 800);
+
+        // A new device name is looked up under the real sysfs root, which
+        // has no "nonexistent" entry: the controller ends up unavailable.
+        let mut changed = config(Duration::ZERO, 1);
+        changed.device = "nonexistent".into();
+        controller.reconfigure(&changed).await;
+        assert!(!controller.is_available());
+    }
+
+    // ------------------------------------------------------ device selection
+
+    fn device(root: &Path, name: &str, kind: &str, max: &str) {
+        let dir = root.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("type"), kind).unwrap();
+        fs::write(dir.join("max_brightness"), max).unwrap();
+        fs::write(dir.join("brightness"), "42").unwrap();
+    }
+
+    #[test]
+    fn discover_prefers_raw_over_firmware() {
+        let root = tempfile::tempdir().unwrap();
+        device(root.path(), "acpi_video0", "firmware", "7");
+        device(root.path(), "intel_backlight", "raw", "1000");
+        device(root.path(), "broken", "raw", "0");
+
+        let found = SysfsBacklight::discover(root.path(), "auto").expect("a device");
+        assert_eq!(found.name(), "intel_backlight");
+        assert_eq!(found.max(), 1000);
+        assert_eq!(found.read().unwrap(), 42);
+
+        found.write(7).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.path().join("intel_backlight/brightness")).unwrap(),
+            "7"
+        );
+    }
+
+    #[test]
+    fn discover_takes_the_first_of_equal_rank() {
+        let root = tempfile::tempdir().unwrap();
+        device(root.path(), "nvidia_0", "raw", "100");
+        device(root.path(), "amdgpu_bl0", "raw", "255");
+        let found = SysfsBacklight::discover(root.path(), "auto").expect("a device");
+        assert_eq!(found.name(), "amdgpu_bl0");
+    }
+
+    #[test]
+    fn discover_explicit_device() {
+        let root = tempfile::tempdir().unwrap();
+        device(root.path(), "acpi_video0", "firmware", "7");
+        device(root.path(), "intel_backlight", "raw", "1000");
+
+        let found = SysfsBacklight::discover(root.path(), "acpi_video0").expect("a device");
+        assert_eq!(found.name(), "acpi_video0");
+        assert_eq!(found.max(), 7);
+
+        assert!(SysfsBacklight::discover(root.path(), "missing").is_none());
+    }
+
+    #[test]
+    fn discover_without_devices() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(SysfsBacklight::discover(root.path(), "auto").is_none());
+        device(root.path(), "broken", "raw", "0");
+        assert!(SysfsBacklight::discover(root.path(), "auto").is_none());
+        assert!(SysfsBacklight::discover(Path::new("/nonexistent"), "auto").is_none());
+    }
+
+    #[test]
+    fn percent_conversions() {
+        assert_eq!(raw_from_percent(1000, 10), 100);
+        assert_eq!(raw_from_percent(7, 50), 3);
+        assert_eq!(raw_from_percent(u32::MAX, 100), u32::MAX);
+        assert_eq!(to_percent(100, 1000), 10);
+        assert_eq!(to_percent(496, 1000), 50);
+        assert_eq!(to_percent(7, 7), 100);
+        assert_eq!(to_percent(9, 7), 100);
+        assert_eq!(to_percent(1, 0), 0);
+    }
+
+    #[test]
+    fn interpolation_ends_exactly_on_the_target() {
+        assert_eq!(interpolate(800, 100, 0, 25), 800);
+        assert_eq!(interpolate(800, 100, 25, 25), 100);
+        assert_eq!(interpolate(100, 800, 25, 25), 800);
+        assert_eq!(interpolate(0, 10, 5, 10), 5);
+    }
+}

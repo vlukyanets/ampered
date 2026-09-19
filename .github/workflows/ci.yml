@@ -8,9 +8,9 @@ on:
 jobs:
   style:
     name: Style
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -19,11 +19,29 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --check
 
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev pkg-config
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
   build-and-test:
     name: Build and Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: dtolnay/rust-toolchain@stable
 

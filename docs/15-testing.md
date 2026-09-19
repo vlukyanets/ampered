@@ -1,20 +1,20 @@
 # 15 — Testing
 
-> **Status:** only the `config` tests are in the tree — parsing, every rule in
-> `validate()`, and the check that keeps `examples/ampered.toml` identical to
-> the fenced block in `13-config-example.md`. They touch nothing outside the
-> process: no sysfs, no sockets, no D-Bus, no subprocesses. The suites for
-> `core`, `backlight`, `power`, `display`, `ipc` and `timers` are not in the
-> tree. What follows describes the full intended suite, and stands as the
-> specification a restored one should work from.
+> **Status:** the `config`, `core`, `backlight` and `power::supply` suites
+> are in the tree. They touch nothing outside the process: no real sysfs,
+> no sockets, no D-Bus, no subprocesses — the backlight and power supply
+> tests run against a tempdir laid out like sysfs, and the FSM tests compare
+> `Command` values. Of the FSM scenarios below, 6 and 7 wait for the server
+> cycle (v0.2); the `display`, `ipc` and `timers` suites are not written yet.
+> What follows describes the full intended suite.
 
 ## Levels
 
 | Level | What | How | When |
 |---|---|---|---|
 | Unit | config parsing/validation, brightness conversion, `classify_wake`, hysteresis | plain `#[test]` | always |
-| FSM | the transition table from `02-state-machine.md` and `10-long-sleep-rtc.md` | `TRANSITIONS: &[(State, Event, State, &[Command])]` + scenario tests | always |
-| Module tests with fakes | `backlight` with `FakeBacklightSink` (a tempdir with `brightness`/`max_brightness`), `supply` on a tempdir copy of `/sys/class/power_supply` | `tempfile` | always |
+| FSM | the transition table from `02-state-machine.md` and `10-long-sleep-rtc.md` | a `transitions()` table of `(State, Event, State, Vec<Command>)` rows + scenario tests | always |
+| Module tests with fakes | `backlight` with an in-memory `FakeBacklightSink` (device selection on a tempdir with `brightness`/`max_brightness`), `supply` on a tempdir copy of `/sys/class/power_supply` | `tempfile` | always |
 | Integration | real Wayland, D-Bus | `--features integration`, `#[ignore]` without the feature | manual / on a dev machine |
 
 ## FSM: required scenarios

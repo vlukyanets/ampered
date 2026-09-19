@@ -778,3 +778,863 @@ impl Engine {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! The transition table from `docs/02-state-machine.md` and the scenarios
+    //! from `docs/15-testing.md`. Nothing here touches the machine: a
+    //! `Command::Suspend` is a value to compare, not a suspend.
+
+    use super::*;
+    use crate::ipc::ScreenState;
+
+    const CONFIG: &str = r#"
+        [backlight]
+        dim_percent = 10
+
+        [modes.ac]
+        dim_after = "5m"
+        screen_off_after = "10m"
+        sleep_after = "30m"
+
+        [modes.bat]
+        dim_after = "2m"
+        screen_off_after = "4m"
+        sleep_after = "10m"
+
+        [modes.low]
+        dim_after = "1m"
+        screen_off_after = "2m"
+        sleep_after = "5m"
+
+        [modes.nodim]
+        dim_after = "0"
+        screen_off_after = "4m"
+        sleep_after = "10m"
+
+        [auto_mode]
+        enabled = true
+        on_ac = "ac"
+        on_battery = "bat"
+        low_battery_percent = 20
+        on_low_battery = "low"
+
+        [sleep]
+        method = "suspend"
+        respect_inhibitors = true
+        sleep_retry = "2m"
+    "#;
+
+    const SUSPEND: Command = Command::Suspend {
+        method: SleepMethod::Suspend,
+        force: false,
+    };
+    const SLEEP_RETRY: Duration = Duration::from_secs(120);
+
+    fn config_from(text: &str) -> Arc<Config> {
+        let config = Config::parse(text).expect("parse");
+        config.validate().expect("valid");
+        Arc::new(config)
+    }
+
+    fn config() -> Arc<Config> {
+        config_from(CONFIG)
+    }
+
+    fn stages(name: &str) -> Stages {
+        Stages::from_mode(&config().modes[name])
+    }
+
+    fn on_battery(percent: u8) -> PowerSnapshot {
+        PowerSnapshot {
+            ac: false,
+            battery: Some(percent),
+            batteries: vec!["BAT0".into()],
+        }
+    }
+
+    fn fresh() -> Engine {
+        Engine::new(config(), PowerSnapshot::on_ac())
+    }
+
+    /// An engine driven into `state` along the documented idle path.
+    fn engine_in(state: State) -> Engine {
+        let mut engine = fresh();
+        let path: &[Event] = match state {
+            State::Active => &[],
+            State::Dimmed => &[Event::Idle(Stage::Dim)],
+            State::ScreenOff => &[Event::Idle(Stage::Dim), Event::Idle(Stage::ScreenOff)],
+            State::Suspending => &[
+                Event::Idle(Stage::Dim),
+                Event::Idle(Stage::ScreenOff),
+                Event::Idle(Stage::Sleep),
+            ],
+            State::Sleeping => &[
+                Event::Idle(Stage::Dim),
+                Event::Idle(Stage::ScreenOff),
+                Event::Idle(Stage::Sleep),
+                Event::Suspending,
+            ],
+            State::LongSleep(_) => unreachable!("the server cycle lands in v0.2"),
+        };
+        for event in path {
+            engine.handle(event.clone());
+        }
+        assert_eq!(engine.state(), state);
+        engine
+    }
+
+    /// Everything except the `Broadcast`s, which mirror a state or mode change
+    /// and are checked once on their own in `broadcasts_mirror_the_changes`.
+    fn effects(commands: Vec<Command>) -> Vec<Command> {
+        commands
+            .into_iter()
+            .filter(|c| !matches!(c, Command::Broadcast(_)))
+            .collect()
+    }
+
+    fn inhibitor(who: &str) -> Inhibitor {
+        Inhibitor {
+            what: "sleep".into(),
+            who: who.into(),
+            why: "busy".into(),
+        }
+    }
+
+    fn ipc(request: Request) -> Event {
+        Event::Ipc(7, request)
+    }
+
+    fn set_mode(engine: &mut Engine, name: &str) {
+        let commands = engine.handle(ipc(Request::Mode { name: name.into() }));
+        assert!(
+            commands.contains(&Command::Reply(7, Response::Ok)),
+            "{commands:?}"
+        );
+    }
+
+    // ------------------------------------------------------------- the table
+
+    /// One row per line of the transition table: from, event, to, commands.
+    /// Rows that need a condition (inhibitors, a disabled stage, a manual
+    /// mode) live in the scenario tests below.
+    fn transitions() -> Vec<(State, Event, State, Vec<Command>)> {
+        use Command::*;
+        use State::*;
+        vec![
+            // The main idle chain.
+            (Active, Event::Idle(Stage::Dim), Dimmed, vec![Dim(10)]),
+            (
+                Dimmed,
+                Event::Idle(Stage::ScreenOff),
+                ScreenOff,
+                vec![Screen(false)],
+            ),
+            (
+                ScreenOff,
+                Event::Idle(Stage::Sleep),
+                Suspending,
+                vec![SUSPEND],
+            ),
+            (Suspending, Event::Suspending, Sleeping, vec![]),
+            (
+                Sleeping,
+                Event::Resumed,
+                Active,
+                vec![Undim, Screen(true), ReplaceIdleStages(stages("ac"))],
+            ),
+            // Stages before `sleep` disabled, or a compositor restart that
+            // delivers the later stage first.
+            (
+                Active,
+                Event::Idle(Stage::ScreenOff),
+                ScreenOff,
+                vec![Screen(false)],
+            ),
+            (Active, Event::Idle(Stage::Sleep), Suspending, vec![SUSPEND]),
+            (Dimmed, Event::Idle(Stage::Sleep), Suspending, vec![SUSPEND]),
+            // Activity from every intermediate state.
+            (Active, Event::Activity, Active, vec![]),
+            (Dimmed, Event::Activity, Active, vec![Undim]),
+            (
+                ScreenOff,
+                Event::Activity,
+                Active,
+                vec![Undim, Screen(true)],
+            ),
+            (
+                Suspending,
+                Event::Activity,
+                Active,
+                vec![Undim, Screen(true)],
+            ),
+            (Sleeping, Event::Activity, Sleeping, vec![]),
+            // Idempotency: no second Dim, no stage while the machine is going down.
+            (Dimmed, Event::Idle(Stage::Dim), Dimmed, vec![]),
+            (ScreenOff, Event::Idle(Stage::Dim), ScreenOff, vec![]),
+            (ScreenOff, Event::Idle(Stage::ScreenOff), ScreenOff, vec![]),
+            (Suspending, Event::Idle(Stage::Sleep), Suspending, vec![]),
+            (Sleeping, Event::Idle(Stage::Dim), Sleeping, vec![]),
+            // logind suspending for a reason of its own (lid, `systemctl suspend`).
+            (Active, Event::Suspending, Sleeping, vec![]),
+            (ScreenOff, Event::Suspending, Sleeping, vec![]),
+            // Reload never touches the state.
+            (
+                Active,
+                Event::ReloadRequested,
+                Active,
+                vec![Reload { reply_to: None }],
+            ),
+            (
+                ScreenOff,
+                Event::ReloadRequested,
+                ScreenOff,
+                vec![Reload { reply_to: None }],
+            ),
+            // Shutdown restores the screen from wherever we are.
+            (
+                Active,
+                Event::ShutdownRequested,
+                Active,
+                vec![Undim, Screen(true), Shutdown],
+            ),
+            (
+                Dimmed,
+                Event::ShutdownRequested,
+                Active,
+                vec![Undim, Screen(true), Shutdown],
+            ),
+            (
+                ScreenOff,
+                Event::ShutdownRequested,
+                Active,
+                vec![Undim, Screen(true), Shutdown],
+            ),
+            // Bookkeeping events produce nothing on their own.
+            (Active, Event::IdleBackendChanged(false), Active, vec![]),
+            (
+                Active,
+                Event::Inhibitors(vec![inhibitor("x")]),
+                Active,
+                vec![],
+            ),
+            (
+                Active,
+                Event::SleepBlocked(vec![inhibitor("x")]),
+                Active,
+                vec![],
+            ),
+            (Active, Event::Timer(TimerId::SleepRetry), Active, vec![]),
+            (Active, Event::Timer(TimerId::Grace), Active, vec![]),
+            (Active, Event::Timer(TimerId::AwakeWindow), Active, vec![]),
+            (
+                Active,
+                Event::Timer(TimerId::InhibitExpiry(99)),
+                Active,
+                vec![],
+            ),
+            (Active, Event::AcChanged(true), Active, vec![]),
+        ]
+    }
+
+    #[test]
+    fn transition_table() {
+        for (from, event, to, expected) in transitions() {
+            let mut engine = engine_in(from);
+            let commands = effects(engine.handle(event.clone()));
+            assert_eq!(commands, expected, "{from} + {event:?}");
+            assert_eq!(engine.state(), to, "{from} + {event:?}");
+        }
+    }
+
+    // ------------------------------------------------------------- scenarios
+
+    /// Scenario 1: the whole chain, with the broadcasts this time.
+    #[test]
+    fn broadcasts_mirror_the_changes() {
+        let mut engine = fresh();
+        let state = |from: &str, to: &str| {
+            Command::Broadcast(StateEvent::State {
+                from: from.into(),
+                to: to.into(),
+            })
+        };
+
+        assert_eq!(
+            engine.handle(Event::Idle(Stage::Dim)),
+            vec![Command::Dim(10), state("Active", "Dimmed")]
+        );
+        assert_eq!(
+            engine.handle(Event::Idle(Stage::ScreenOff)),
+            vec![Command::Screen(false), state("Dimmed", "ScreenOff")]
+        );
+        assert_eq!(
+            engine.handle(Event::Idle(Stage::Sleep)),
+            vec![SUSPEND, state("ScreenOff", "Suspending")]
+        );
+        assert_eq!(
+            engine.handle(Event::Suspending),
+            vec![state("Suspending", "Sleeping")]
+        );
+        assert_eq!(
+            engine.handle(Event::Resumed),
+            vec![
+                Command::Undim,
+                Command::Screen(true),
+                Command::ReplaceIdleStages(stages("ac")),
+                state("Sleeping", "Active"),
+            ]
+        );
+        // No change, no broadcast.
+        assert_eq!(engine.handle(Event::Activity), vec![]);
+    }
+
+    #[test]
+    fn start_applies_the_auto_mode() {
+        let mut engine = fresh();
+        assert_eq!(engine.mode(), &ModeSelection::Auto("ac".into()));
+        assert_eq!(
+            engine.start(),
+            vec![
+                Command::ApplyMode("ac".into()),
+                Command::ReplaceIdleStages(stages("ac")),
+            ]
+        );
+
+        let mut engine = Engine::new(config(), on_battery(10));
+        assert_eq!(engine.mode(), &ModeSelection::Auto("low".into()));
+        assert!(engine.status().power.low);
+        assert_eq!(engine.start()[0], Command::ApplyMode("low".into()));
+    }
+
+    /// Scenario 3: an inhibitor defers the idle sleep until it is gone.
+    #[test]
+    fn external_inhibitor_arms_a_retry() {
+        let mut engine = engine_in(State::ScreenOff);
+        engine.handle(Event::Inhibitors(vec![inhibitor("firefox")]));
+
+        assert_eq!(
+            engine.handle(Event::Idle(Stage::Sleep)),
+            vec![Command::StartTimer(TimerId::SleepRetry, SLEEP_RETRY)]
+        );
+        assert_eq!(engine.state(), State::ScreenOff);
+        assert_eq!(engine.status().sleep.blocked_by, vec!["firefox: busy"]);
+
+        // Still blocked: the timer is re-armed, nothing else.
+        assert_eq!(
+            engine.handle(Event::Timer(TimerId::SleepRetry)),
+            vec![Command::StartTimer(TimerId::SleepRetry, SLEEP_RETRY)]
+        );
+
+        engine.handle(Event::Inhibitors(vec![]));
+        assert_eq!(
+            effects(engine.handle(Event::Timer(TimerId::SleepRetry))),
+            vec![SUSPEND]
+        );
+        assert_eq!(engine.state(), State::Suspending);
+    }
+
+    #[test]
+    fn activity_cancels_the_pending_retry() {
+        let mut engine = engine_in(State::ScreenOff);
+        engine.handle(Event::Inhibitors(vec![inhibitor("firefox")]));
+        engine.handle(Event::Idle(Stage::Sleep));
+
+        assert_eq!(
+            effects(engine.handle(Event::Activity)),
+            vec![
+                Command::CancelTimer(TimerId::SleepRetry),
+                Command::Undim,
+                Command::Screen(true),
+            ]
+        );
+        // The timer may still fire from the channel; it must be ignored now.
+        assert_eq!(engine.handle(Event::Timer(TimerId::SleepRetry)), vec![]);
+    }
+
+    /// ADR-11: logind refused the suspend after we asked for it.
+    #[test]
+    fn sleep_blocked_goes_back_and_retries() {
+        let mut engine = engine_in(State::Suspending);
+        assert_eq!(
+            effects(engine.handle(Event::SleepBlocked(vec![inhibitor("firefox")]))),
+            vec![Command::StartTimer(TimerId::SleepRetry, SLEEP_RETRY)]
+        );
+        assert_eq!(engine.state(), State::ScreenOff);
+        assert_eq!(engine.status().sleep.blocked_by, vec!["firefox: busy"]);
+
+        // A suspend from Active goes back to Active.
+        let mut engine = fresh();
+        engine.handle(Event::Idle(Stage::Sleep));
+        engine.handle(Event::SleepBlocked(vec![inhibitor("firefox")]));
+        assert_eq!(engine.state(), State::Active);
+    }
+
+    #[test]
+    fn sleep_retry_zero_means_no_retry() {
+        let text = CONFIG.replace("sleep_retry = \"2m\"", "sleep_retry = \"0\"");
+        let mut engine = Engine::new(config_from(&text), PowerSnapshot::on_ac());
+        engine.handle(Event::Inhibitors(vec![inhibitor("firefox")]));
+        engine.handle(Event::Idle(Stage::ScreenOff));
+        assert_eq!(engine.handle(Event::Idle(Stage::Sleep)), vec![]);
+        assert_eq!(engine.state(), State::ScreenOff);
+    }
+
+    #[test]
+    fn respect_inhibitors_false_ignores_them() {
+        let text = CONFIG.replace("respect_inhibitors = true", "respect_inhibitors = false");
+        let mut engine = Engine::new(config_from(&text), PowerSnapshot::on_ac());
+        engine.handle(Event::Inhibitors(vec![inhibitor("firefox")]));
+        engine.handle(Event::Idle(Stage::ScreenOff));
+        assert_eq!(
+            effects(engine.handle(Event::Idle(Stage::Sleep))),
+            vec![SUSPEND]
+        );
+        assert!(engine.status().sleep.blocked_by.is_empty());
+    }
+
+    /// Scenario 4: auto-switching follows the power source, manual does not.
+    #[test]
+    fn ac_change_reapplies_the_auto_mode() {
+        let mut engine = fresh();
+        assert_eq!(
+            engine.handle(Event::AcChanged(false)),
+            vec![
+                Command::Broadcast(StateEvent::Power { ac: false }),
+                Command::ApplyMode("bat".into()),
+                Command::ReplaceIdleStages(stages("bat")),
+                Command::Broadcast(StateEvent::Mode { name: "bat".into() }),
+            ]
+        );
+        assert_eq!(engine.mode(), &ModeSelection::Auto("bat".into()));
+        // The same value again is not a change.
+        assert_eq!(engine.handle(Event::AcChanged(false)), vec![]);
+
+        // Manual: the power event is still broadcast, the mode stays.
+        set_mode(&mut engine, "ac");
+        assert_eq!(engine.mode(), &ModeSelection::Manual("ac".into()));
+        assert_eq!(
+            engine.handle(Event::AcChanged(true)),
+            vec![Command::Broadcast(StateEvent::Power { ac: true })]
+        );
+        assert_eq!(
+            engine.handle(Event::AcChanged(false)),
+            vec![Command::Broadcast(StateEvent::Power { ac: false })]
+        );
+        assert_eq!(engine.mode(), &ModeSelection::Manual("ac".into()));
+
+        // Back to auto: recomputed from the current power source.
+        assert_eq!(
+            effects(engine.handle(ipc(Request::Mode {
+                name: "auto".into()
+            }))),
+            vec![
+                Command::ApplyMode("bat".into()),
+                Command::ReplaceIdleStages(stages("bat")),
+                Command::Reply(7, Response::Ok),
+            ]
+        );
+        assert_eq!(engine.mode(), &ModeSelection::Auto("bat".into()));
+    }
+
+    #[test]
+    fn mode_change_is_a_no_op_when_nothing_changes() {
+        let mut engine = fresh();
+        // AC and on_ac already in effect: a "change" to the same value.
+        assert_eq!(engine.handle(Event::AcChanged(true)), vec![]);
+
+        let text = CONFIG.replace("on_battery = \"bat\"", "on_battery = \"ac\"");
+        let mut engine = Engine::new(config_from(&text), PowerSnapshot::on_ac());
+        // The wanted mode is the same one: only the power broadcast goes out.
+        assert_eq!(
+            engine.handle(Event::AcChanged(false)),
+            vec![Command::Broadcast(StateEvent::Power { ac: false })]
+        );
+    }
+
+    /// Scenario 5: `low` at ≤ 20, clears only at ≥ 25.
+    #[test]
+    fn low_battery_hysteresis() {
+        let mut engine = Engine::new(config(), on_battery(50));
+        assert_eq!(engine.mode(), &ModeSelection::Auto("bat".into()));
+
+        assert_eq!(engine.handle(Event::Battery(21)), vec![]);
+        assert!(!engine.status().power.low);
+
+        assert_eq!(
+            effects(engine.handle(Event::Battery(20))),
+            vec![
+                Command::ApplyMode("low".into()),
+                Command::ReplaceIdleStages(stages("low")),
+            ]
+        );
+        assert!(engine.status().power.low);
+
+        assert_eq!(engine.handle(Event::Battery(23)), vec![]);
+        assert!(engine.status().power.low);
+        assert_eq!(engine.handle(Event::Battery(24)), vec![]);
+        assert!(engine.status().power.low);
+
+        assert_eq!(
+            effects(engine.handle(Event::Battery(25))),
+            vec![
+                Command::ApplyMode("bat".into()),
+                Command::ReplaceIdleStages(stages("bat")),
+            ]
+        );
+        assert!(!engine.status().power.low);
+        assert_eq!(engine.status().power.battery_percent, Some(25));
+    }
+
+    #[test]
+    fn low_battery_does_not_matter_on_ac() {
+        let mut engine = fresh();
+        assert_eq!(engine.handle(Event::Battery(5)), vec![]);
+        assert!(engine.status().power.low);
+        assert_eq!(engine.mode(), &ModeSelection::Auto("ac".into()));
+
+        // Unplugging with a low battery goes straight to on_low_battery.
+        let commands = engine.handle(Event::AcChanged(false));
+        assert!(
+            commands.contains(&Command::ApplyMode("low".into())),
+            "{commands:?}"
+        );
+    }
+
+    #[test]
+    fn low_band_is_capped_at_100() {
+        let text = CONFIG.replace("low_battery_percent = 20", "low_battery_percent = 98");
+        let mut engine = Engine::new(config_from(&text), on_battery(50));
+        assert!(engine.status().power.low);
+        assert_eq!(engine.handle(Event::Battery(99)), vec![]);
+        assert!(engine.status().power.low);
+        engine.handle(Event::Battery(100));
+        assert!(!engine.status().power.low);
+    }
+
+    /// Scenario 9: a reload is a command for `main`; the engine keeps its state
+    /// and mode until a validated config comes back through `set_config`.
+    #[test]
+    fn reload_keeps_state_and_mode() {
+        let mut engine = engine_in(State::Dimmed);
+        set_mode(&mut engine, "bat");
+
+        assert_eq!(
+            engine.handle(Event::ReloadRequested),
+            vec![Command::Reload { reply_to: None }]
+        );
+        assert_eq!(
+            engine.handle(ipc(Request::Reload)),
+            vec![Command::Reload { reply_to: Some(7) }]
+        );
+        assert_eq!(engine.state(), State::Dimmed);
+        assert_eq!(engine.mode(), &ModeSelection::Manual("bat".into()));
+
+        // A manual mode survives a new config; the stages are re-read from it.
+        let text = CONFIG.replace("sleep_after = \"10m\"", "sleep_after = \"20m\"");
+        let new = config_from(&text);
+        assert_eq!(
+            engine.set_config(new.clone()),
+            vec![
+                Command::ApplyMode("bat".into()),
+                Command::ReplaceIdleStages(Stages::from_mode(&new.modes["bat"])),
+            ]
+        );
+        assert_eq!(engine.state(), State::Dimmed);
+        assert_eq!(engine.mode(), &ModeSelection::Manual("bat".into()));
+    }
+
+    #[test]
+    fn set_config_recomputes_an_auto_mode() {
+        let mut engine = fresh();
+        let text = CONFIG.replace("on_ac = \"ac\"", "on_ac = \"nodim\"");
+        assert_eq!(
+            engine.set_config(config_from(&text)),
+            vec![
+                Command::ApplyMode("nodim".into()),
+                Command::ReplaceIdleStages(stages("nodim")),
+            ]
+        );
+        assert_eq!(engine.mode(), &ModeSelection::Auto("nodim".into()));
+    }
+
+    /// Scenario 10: with `dim` disabled the first stage is `screen_off`.
+    #[test]
+    fn disabled_dim_stage_skips_to_screen_off() {
+        let mut engine = fresh();
+        set_mode(&mut engine, "nodim");
+        assert_eq!(engine.stages().dim, None);
+        assert_eq!(
+            effects(engine.handle(Event::Idle(Stage::ScreenOff))),
+            vec![Command::Screen(false)]
+        );
+        assert_eq!(engine.state(), State::ScreenOff);
+        assert_eq!(
+            effects(engine.handle(Event::Activity)),
+            vec![Command::Undim, Command::Screen(true)]
+        );
+    }
+
+    #[test]
+    fn auto_mode_disabled_falls_back_to_the_first_mode() {
+        let text = CONFIG.replace("enabled = true", "enabled = false");
+        let mut engine = Engine::new(config_from(&text), PowerSnapshot::on_ac());
+        // BTreeMap order: "ac" < "bat" < "low" < "nodim".
+        assert_eq!(engine.mode(), &ModeSelection::Auto("ac".into()));
+        assert_eq!(
+            engine.handle(Event::AcChanged(false)),
+            vec![Command::Broadcast(StateEvent::Power { ac: false })]
+        );
+        assert_eq!(engine.mode(), &ModeSelection::Auto("ac".into()));
+    }
+
+    #[test]
+    fn no_modes_at_all_means_no_apply_and_no_stages() {
+        let mut engine = Engine::new(
+            config_from("[auto_mode]\nenabled = false\n"),
+            PowerSnapshot::on_ac(),
+        );
+        assert_eq!(
+            engine.start(),
+            vec![Command::ReplaceIdleStages(Stages::NONE)]
+        );
+        assert!(engine.stages().is_empty());
+    }
+
+    // ------------------------------------------------------------------- ipc
+
+    #[test]
+    fn ipc_mode() {
+        let mut engine = fresh();
+        assert_eq!(
+            engine.handle(ipc(Request::Mode { name: "bat".into() })),
+            vec![
+                Command::ApplyMode("bat".into()),
+                Command::ReplaceIdleStages(stages("bat")),
+                Command::Broadcast(StateEvent::Mode { name: "bat".into() }),
+                Command::Reply(7, Response::Ok),
+            ]
+        );
+        assert_eq!(engine.mode(), &ModeSelection::Manual("bat".into()));
+
+        assert_eq!(
+            engine.handle(ipc(Request::Mode {
+                name: "turbo".into()
+            })),
+            vec![Command::Reply(7, Response::error("no such mode: turbo"))]
+        );
+        assert_eq!(engine.mode(), &ModeSelection::Manual("bat".into()));
+
+        let commands = engine.handle(ipc(Request::Modes));
+        let Command::Reply(7, Response::Modes(data)) = &commands[0] else {
+            panic!("{commands:?}");
+        };
+        assert_eq!(data.modes, vec!["ac", "bat", "low", "nodim"]);
+        assert_eq!(data.current, "bat");
+        assert_eq!(data.source, "manual");
+    }
+
+    #[test]
+    fn ipc_status_reflects_the_engine() {
+        let mut engine = engine_in(State::ScreenOff);
+        let commands = engine.handle(ipc(Request::Status));
+        let Command::Reply(7, Response::Status(status)) = &commands[0] else {
+            panic!("{commands:?}");
+        };
+        assert_eq!(status.state, "ScreenOff");
+        assert_eq!(status.mode.name, "ac");
+        assert_eq!(status.mode.source, "auto");
+        assert!(status.power.ac);
+        assert_eq!(status.idle.stages.dim, "5m");
+        assert_eq!(status.idle.stages.sleep, "30m");
+        assert_eq!(status.sleep.method, "suspend");
+        assert_eq!(status.server.phase, "idle");
+        assert!(status.inhibitors.is_empty());
+    }
+
+    #[test]
+    fn ipc_dim_undim_and_screen() {
+        let mut engine = fresh();
+        assert_eq!(
+            effects(engine.handle(ipc(Request::Dim))),
+            vec![Command::Dim(10), Command::Reply(7, Response::Ok)]
+        );
+        assert_eq!(engine.state(), State::Dimmed);
+        // Idempotent.
+        assert_eq!(
+            engine.handle(ipc(Request::Dim)),
+            vec![Command::Reply(7, Response::Ok)]
+        );
+
+        assert_eq!(
+            effects(engine.handle(ipc(Request::Undim))),
+            vec![Command::Undim, Command::Reply(7, Response::Ok)]
+        );
+        assert_eq!(engine.state(), State::Active);
+
+        assert_eq!(
+            effects(engine.handle(ipc(Request::Screen {
+                state: ScreenState::Off
+            }))),
+            vec![Command::Screen(false), Command::Reply(7, Response::Ok)]
+        );
+        assert_eq!(engine.state(), State::ScreenOff);
+        assert_eq!(
+            effects(engine.handle(ipc(Request::Screen {
+                state: ScreenState::On
+            }))),
+            vec![
+                Command::Undim,
+                Command::Screen(true),
+                Command::Reply(7, Response::Ok),
+            ]
+        );
+        assert_eq!(engine.state(), State::Active);
+    }
+
+    #[test]
+    fn ipc_sleep_reports_blockers_instead_of_retrying() {
+        let mut engine = fresh();
+        engine.handle(Event::Inhibitors(vec![inhibitor("firefox")]));
+
+        assert_eq!(
+            engine.handle(ipc(Request::Sleep { force: false })),
+            vec![Command::Reply(
+                7,
+                Response::error("blocked by inhibitors: firefox: busy")
+            )]
+        );
+        assert_eq!(engine.state(), State::Active);
+        assert_eq!(engine.handle(Event::Timer(TimerId::SleepRetry)), vec![]);
+
+        assert_eq!(
+            effects(engine.handle(ipc(Request::Sleep { force: true }))),
+            vec![
+                Command::Suspend {
+                    method: SleepMethod::Suspend,
+                    force: true,
+                },
+                Command::Reply(7, Response::Ok),
+            ]
+        );
+        assert_eq!(engine.state(), State::Suspending);
+    }
+
+    #[test]
+    fn ipc_inhibit_sleep_blocks_and_expires() {
+        let mut engine = engine_in(State::ScreenOff);
+        let ttl = Duration::from_secs(600);
+        assert_eq!(
+            engine.handle(ipc(Request::Inhibit {
+                what: InhibitWhat::Sleep,
+                why: "backup".into(),
+                ttl,
+            })),
+            vec![
+                Command::StartTimer(TimerId::InhibitExpiry(1), ttl),
+                Command::Reply(7, Response::Inhibited { id: 1 }),
+            ]
+        );
+        assert_eq!(engine.status().sleep.blocked_by, vec!["ampered#1: backup"]);
+        assert_eq!(engine.status().inhibitors.len(), 1);
+        assert_eq!(
+            engine.handle(Event::Idle(Stage::Sleep)),
+            vec![Command::StartTimer(TimerId::SleepRetry, SLEEP_RETRY)]
+        );
+
+        // The next one gets the next id.
+        let commands = engine.handle(ipc(Request::Inhibit {
+            what: InhibitWhat::Sleep,
+            why: "more".into(),
+            ttl,
+        }));
+        assert_eq!(
+            commands[1],
+            Command::Reply(7, Response::Inhibited { id: 2 })
+        );
+
+        assert_eq!(
+            engine.handle(ipc(Request::Uninhibit { id: 2 })),
+            vec![
+                Command::CancelTimer(TimerId::InhibitExpiry(2)),
+                Command::Reply(7, Response::Ok),
+            ]
+        );
+        assert_eq!(
+            engine.handle(ipc(Request::Uninhibit { id: 2 })),
+            vec![Command::Reply(7, Response::error("no such inhibitor: 2"))]
+        );
+
+        assert_eq!(
+            engine.handle(Event::Timer(TimerId::InhibitExpiry(1))),
+            vec![]
+        );
+        assert!(engine.status().inhibitors.is_empty());
+        assert_eq!(
+            effects(engine.handle(Event::Timer(TimerId::SleepRetry))),
+            vec![SUSPEND]
+        );
+    }
+
+    #[test]
+    fn ipc_inhibit_idle_ignores_the_stages() {
+        let mut engine = fresh();
+        engine.handle(ipc(Request::Inhibit {
+            what: InhibitWhat::Idle,
+            why: "movie".into(),
+            ttl: Duration::from_secs(60),
+        }));
+        assert_eq!(engine.handle(Event::Idle(Stage::Dim)), vec![]);
+        assert_eq!(engine.handle(Event::Idle(Stage::Sleep)), vec![]);
+        assert_eq!(engine.state(), State::Active);
+        // An idle inhibit does not block an explicit sleep.
+        assert!(engine.status().sleep.blocked_by.is_empty());
+
+        engine.handle(Event::Timer(TimerId::InhibitExpiry(1)));
+        assert_eq!(
+            effects(engine.handle(Event::Idle(Stage::Dim))),
+            vec![Command::Dim(10)]
+        );
+    }
+
+    #[test]
+    fn ipc_inhibit_ttl_bounds() {
+        let mut engine = fresh();
+        assert_eq!(
+            engine.handle(ipc(Request::Inhibit {
+                what: InhibitWhat::Sleep,
+                why: "x".into(),
+                ttl: Duration::ZERO,
+            })),
+            vec![Command::Reply(
+                7,
+                Response::error("ttl must be greater than zero")
+            )]
+        );
+        let commands = engine.handle(ipc(Request::Inhibit {
+            what: InhibitWhat::Sleep,
+            why: "x".into(),
+            ttl: MAX_INHIBIT_TTL * 10,
+        }));
+        assert_eq!(
+            commands[0],
+            Command::StartTimer(TimerId::InhibitExpiry(1), MAX_INHIBIT_TTL)
+        );
+    }
+
+    #[test]
+    fn ipc_not_implemented_and_not_ours() {
+        let mut engine = fresh();
+        let commands = engine.handle(ipc(Request::LongSleep { cancel: false }));
+        assert!(matches!(
+            &commands[0],
+            Command::Reply(7, Response::Error(_))
+        ));
+        let commands = engine.handle(ipc(Request::Subscribe));
+        assert!(matches!(
+            &commands[0],
+            Command::Reply(7, Response::Error(_))
+        ));
+        assert_eq!(engine.state(), State::Active);
+    }
+}

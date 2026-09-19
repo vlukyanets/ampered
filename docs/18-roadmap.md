@@ -2,14 +2,14 @@
 
 ## v0.1 — "works on my laptop"
 
-The checked items are implemented. Of the tests, only the `config` ones are in
-the tree (`docs/15-testing.md`).
+The checked items are implemented. Tests: `config`, `core`, `backlight` and
+`power::supply` are in the tree; the rest is listed in `docs/15-testing.md`.
 - [x] `config`: parsing, validation, a test against the example
 - [x] `core`: FSM + table-driven tests (no `LongSleep`)
 - [x] `ipc` + `amperedctl status|mode|modes|watch|reload`
-- [x] `power::supply` (sysfs + polling; udev if there's time)
+- [x] `power::supply` (sysfs + polling + udev netlink) with tests on a fake sysfs
 - [x] `power::modes` + auto-switching with hysteresis
-- [x] `backlight` with dim/restore
+- [x] `backlight` with dim/restore and `FakeBacklightSink` tests
 - [x] `idle`: `ext-idle-notify-v1` with reconnect
 - [x] `logind`: suspend, inhibitors, delay lock, `state.json`
 - [x] `display`: `command` backend (`wlr` in v0.2)
