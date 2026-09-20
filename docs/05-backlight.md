@@ -63,8 +63,8 @@ against `written_target`, not `actual_brightness`, because some drivers round.
 
 ## Permissions
 
-v0.1 — root, which is sufficient. For split/user mode, see the udev rule
-in `16-deployment.md` (the `video` group).
+The daemon runs as root (`03-privileges.md`), which is sufficient; no
+udev rule is needed.
 
 ## Edge cases
 

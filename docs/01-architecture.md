@@ -2,12 +2,15 @@
 
 ## Overview
 
-A single `tokio` process. Actors communicate over channels; the only
-decision-making center is `core::Engine`. Four sources feed events into
-it — Wayland idle notifications, sysfs/udev power-supply changes, logind
-D-Bus signals, and the IPC Unix socket — and it dispatches commands out to
-four sinks — backlight, display power, power modes, and the sleep
-planner. See the component table below for exactly what each side does.
+Two `tokio` processes (`03-privileges.md`): the root daemon `ampered`,
+where every decision is made by `core::Engine`, and the session agent
+`ampered-agent`, which owns the Wayland side and talks to the daemon over
+its IPC socket. Within the daemon, actors communicate over channels. Four
+sources feed events into the engine — idle notifications relayed by the
+agent, sysfs/udev power-supply changes, logind D-Bus signals, and the IPC
+Unix socket — and it dispatches commands out to four sinks — backlight,
+display power (through the agent), power modes, and the sleep planner. See
+the component table below for exactly what each side does.
 
 ## Components
 
@@ -15,16 +18,16 @@ planner. See the component table below for exactly what each side does.
 |---|---|---|---|
 | `config` | Loading/validation of `ampered.toml`, hot-reload on SIGHUP | file | `Config` |
 | `core` | FSM; the only place decisions are made | all `Event` | all `Command` |
-| `idle` | `ext-idle-notify-v1` client; one notification per stage | Wayland | `Event::Idle(stage)` / `Event::Activity` |
+| `idle` | `ext-idle-notify-v1` client; one notification per stage. Runs in the agent | Wayland | `Event::Idle(stage)` / `Event::Activity` |
 | `backlight` | sysfs backlight, smooth transitions, `pre_dim` memory | `Command` | sysfs |
-| `display` | DPMS via `wlr-output-power-management` or a command | `Command` | Wayland / `sh -c` |
+| `display` | DPMS via `wlr-output-power-management` or a command. Runs in the agent | `Command` | Wayland / `sh -c` |
 | `power::supply` | AC and charge from `/sys/class/power_supply` | sysfs, udev | `Event::AcChanged`, `Event::Battery` |
 | `power::modes` | Applying a mode | `Command::ApplyMode` | sysfs |
 | `logind` | `Suspend`, `Hibernate`, `PrepareForSleep`, `ListInhibitors`, delay lock | D-Bus | `Event::Suspending`, `Event::Resumed` |
 | `sleep::rtc` | RTC alarm (`wakealarm` / `rtcwake`) | `Command::ScheduleWake` | RTC |
 | `sleep::planner` | Wake classification, `resume_hook` | `Command::ScheduleWake`, `Event::Resumed` | `Event::Activity` for a wake by the user, `sh -c` |
 | `ipc` | NDJSON server over a Unix socket; `amperedctl` — a separate binary | socket | `Event::Ipc(req)` |
-| `agent` | Split mode (`03-privileges.md`): the daemon's end of the `ampered-agent` stream, standing in for `idle` and `display` | `Command::ReplaceIdleStages`, `Command::Screen` | `Event::Idle`, `Event::Activity`, `Event::IdleBackendChanged` |
+| `agent` | The daemon's end of the `ampered-agent` stream (`03-privileges.md`): where `idle` and `display` are reached from the daemon | `Command::ReplaceIdleStages`, `Command::Screen` | `Event::Idle`, `Event::Activity`, `Event::IdleBackendChanged` |
 
 ## Key flows
 
@@ -57,7 +60,8 @@ planner. See the component table below for exactly what each side does.
 
 | Failure | Behavior |
 |---|---|
-| No Wayland / compositor crashed | `idle` reconnects with backoff; stages reset to `Active` |
+| No agent (no session, agent not installed) | no idle stages, `degraded: ["agent"]`; everything else works |
+| No Wayland / compositor crashed | the agent's `idle` reconnects with backoff; stages reset to `Active` |
 | No `ext_idle_notifier_v1` in the registry | `idle: unavailable`; everything else works |
 | No backlight device | dim — a no-op with a single `warn!` |
 | No D-Bus / logind | sleep disabled, `degraded: ["logind"]` in status |

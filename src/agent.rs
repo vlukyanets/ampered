@@ -1,9 +1,9 @@
-//! Split mode: the daemon's end of the `ampered-agent` stream, and the
-//! types both ends speak.
+//! The daemon's end of the `ampered-agent` stream, and the types both ends
+//! speak.
 //!
 //! Reference: `docs/03-privileges.md`, `docs/11-ipc-cli.md` ("The agent
-//! stream"), ADR-16. In split mode `AgentLink` stands where `idle` and
-//! `display` stand in root mode; the agent runs those two as the user.
+//! stream"), ADR-16, ADR-17. `AgentLink` is how the daemon reaches `idle`
+//! and `display`, which only ever run in the agent, as the user.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

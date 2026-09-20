@@ -15,10 +15,8 @@ use tracing::{debug, error, info, warn};
 
 use ampered::agent::AgentLink;
 use ampered::backlight::Controller as Backlight;
-use ampered::config::{Config, IdleFallback as IdleFallbackConfig, Privilege};
+use ampered::config::{Config, IdleFallback as IdleFallbackConfig};
 use ampered::core::{Command, Engine, Event, ModeSelection, Phase, State, TimerId};
-use ampered::display::Display;
-use ampered::idle::{self, IdleHandle};
 use ampered::ipc::{self, RequestId, Response, StateEvent, StatusData};
 use ampered::logind::{self, IdleFallback, LogindHandle, SavedState, SharedFallback, SharedState};
 use ampered::logind_conf;
@@ -95,11 +93,9 @@ async fn run(cli: Cli, config: Config, notifier: Notifier) -> Result<()> {
         .unwrap_or_else(|| config.general.socket.clone());
 
     let (events_tx, mut events_rx) = mpsc::channel::<Event>(64);
-    // Split mode: the agent owns the compositor side (`docs/03-privileges.md`).
-    let agent = match config.general.privilege {
-        Privilege::Split => Some(AgentLink::new(&config.display)),
-        Privilege::Root => None,
-    };
+    // The agent owns the compositor side (`docs/03-privileges.md`); until
+    // one registers, the daemon runs as if there were no compositor.
+    let agent = AgentLink::new(&config.display);
     let server = ipc::listen(
         &socket,
         &config.general.socket_group,
@@ -116,17 +112,7 @@ async fn run(cli: Cli, config: Config, notifier: Notifier) -> Result<()> {
     if !backlight.is_available() {
         degraded.push("backlight".into());
     }
-    let session = match agent {
-        Some(link) => {
-            info!("split mode: waiting for ampered-agent");
-            Session::Agent(link)
-        }
-        None => {
-            let idle = idle::spawn(config.wayland.clone(), events_tx.clone());
-            let display = Display::from_config(&config, idle.clone());
-            Session::Local { idle, display }
-        }
-    };
+    info!("waiting for ampered-agent");
 
     let source: Arc<dyn PowerSource + Send + Sync> = match &cli.fake_power {
         Some(spec) => {
@@ -183,7 +169,7 @@ async fn run(cli: Cli, config: Config, notifier: Notifier) -> Result<()> {
         timers: Timers::new(events_tx.clone()),
         modes: ModeApplier::new(SysfsModeSink::new()),
         backlight,
-        session,
+        agent,
         logind,
         saved,
         supply,
@@ -271,52 +257,6 @@ enum Outcome {
     Shutdown,
 }
 
-/// Who talks to the compositor: this process, or `ampered-agent` in the
-/// user session (`docs/03-privileges.md`).
-enum Session {
-    Local { idle: IdleHandle, display: Display },
-    Agent(AgentLink),
-}
-
-impl Session {
-    fn replace_stages(&self, stages: ampered::core::Stages) {
-        match self {
-            Session::Local { idle, .. } => idle.replace_stages(stages),
-            Session::Agent(link) => link.replace_stages(stages),
-        }
-    }
-
-    async fn set_screen(&mut self, on: bool) {
-        match self {
-            Session::Local { display, .. } => display.set(on).await,
-            Session::Agent(link) => link.set_screen(on),
-        }
-    }
-
-    fn display_available(&self) -> bool {
-        match self {
-            Session::Local { display, .. } => display.is_available(),
-            Session::Agent(link) => link.display_available(),
-        }
-    }
-
-    fn idle_backend(&self) -> String {
-        match self {
-            Session::Local { .. } => idle::BACKEND.to_string(),
-            Session::Agent(link) => link.backend(),
-        }
-    }
-
-    fn reconfigure_display(&mut self, config: &Config) {
-        match self {
-            Session::Local { idle, display } => {
-                *display = Display::from_config(config, idle.clone());
-            }
-            Session::Agent(link) => link.set_display(&config.display),
-        }
-    }
-}
-
 struct Daemon {
     config_path: PathBuf,
     config: Arc<Config>,
@@ -325,7 +265,8 @@ struct Daemon {
     timers: Timers,
     modes: ModeApplier<SysfsModeSink>,
     backlight: Backlight,
-    session: Session,
+    /// The compositor side, in `ampered-agent` (`docs/03-privileges.md`).
+    agent: AgentLink,
     logind: Option<LogindHandle>,
     saved: SharedState,
     supply: SupplyHandle,
@@ -353,7 +294,7 @@ impl Daemon {
             Command::CancelTimer(id) => self.timers.cancel(id),
             Command::ReplaceIdleStages(stages) => {
                 ampered::locked(&self.fallback).sleep_after = stages.sleep;
-                self.session.replace_stages(stages);
+                self.agent.replace_stages(stages);
             }
             Command::Suspend { method, force } => {
                 let delivered = match &self.logind {
@@ -410,7 +351,7 @@ impl Daemon {
                 None => error!("no logind, cannot power off"),
             },
             Command::RunHook(command) => planner::spawn_hook(command),
-            Command::Screen(on) => self.session.set_screen(on).await,
+            Command::Screen(on) => self.agent.set_screen(on),
             Command::Dim(percent) => self.backlight.dim_to(percent).await,
             Command::Undim => self.backlight.restore().await,
             Command::ApplyMode(name) => match self.config.modes.get(&name) {
@@ -483,18 +424,16 @@ impl Daemon {
     /// has no clock at all.
     fn enrich_status(&self, status: &mut StatusData) {
         status.degraded = self.degraded.clone();
-        if let Session::Agent(link) = &self.session
-            && !link.is_connected()
-        {
+        if !self.agent.is_connected() {
             status.degraded.push("agent".into());
         }
         // The `wlr` backend comes and goes with the compositor.
-        if !self.session.display_available() {
+        if !self.agent.display_available() {
             status.degraded.push("display".into());
         }
         status.power.batteries = self.supply.latest().batteries;
         status.backlight = self.backlight.info();
-        status.idle.backend = self.session.idle_backend();
+        status.idle.backend = self.agent.backend();
         if !status.idle.connected {
             status.degraded.push("wayland".into());
             if ampered::locked(&self.fallback).engaged() {
@@ -529,14 +468,8 @@ impl Daemon {
         if config.general.socket != self.config.general.socket {
             warn!("[general] socket changed; it takes effect after a restart");
         }
-        if config.general.privilege != self.config.general.privilege {
-            warn!("[general] privilege changed; it takes effect after a restart");
-        }
-        if config.wayland != self.config.wayland && matches!(self.session, Session::Local { .. }) {
-            warn!("[wayland] changed; it takes effect after a restart");
-        }
 
-        // Everything except [general].socket and [wayland] is live
+        // Everything except [general].socket is live
         // (`docs/12-configuration.md`), which includes the two sections the
         // engine knows nothing about.
         if config.backlight != self.config.backlight {
@@ -544,7 +477,7 @@ impl Daemon {
             self.mark_degraded("backlight", !self.backlight.is_available());
         }
         if config.display != self.config.display {
-            self.session.reconfigure_display(&config);
+            self.agent.set_display(&config.display);
         }
         if config.server != self.config.server {
             self.rtc = rtc_for(&config);

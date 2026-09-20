@@ -17,12 +17,12 @@ through logind, the `wlr` and `command` DPMS backends, `Type=notify` with
 a watchdog, and the long-sleep server cycle: lid closed, power lost, the
 machine sleeps with an RTC alarm, wakes to check for power, hibernates or
 powers off at a critical battery, and runs `resume_hook` once power is
-back. Split mode (`privilege = "split"`) moves the compositor side into
-`ampered-agent` in the user session, so the root daemon never touches
-Wayland ([`docs/03-privileges.md`](docs/03-privileges.md)). What comes
-next is in [`docs/18-roadmap.md`](docs/18-roadmap.md).
+back. The compositor side lives in `ampered-agent` in the user session,
+so the root daemon never touches Wayland
+([`docs/03-privileges.md`](docs/03-privileges.md)). What comes next is in
+[`docs/18-roadmap.md`](docs/18-roadmap.md).
 
-A missing subsystem is never fatal: no compositor, no backlight or no D-Bus
+A missing subsystem is never fatal: no agent, no backlight or no D-Bus
 leaves the daemon running in a degraded mode, which `amperedctl status`
 reports.
 
@@ -35,11 +35,13 @@ cargo run -- --config examples/ampered.toml --check     # validate a config
 # a development instance on its own socket, with a pretend battery
 RUST_LOG=ampered=debug cargo run -- --config examples/ampered.toml \
     --socket /tmp/ampered.sock --fake-power bat:15
+# the session agent for it, from the same terminal session
+cargo run --bin ampered-agent -- --socket /tmp/ampered.sock
 cargo run --bin amperedctl -- --socket /tmp/ampered.sock status
 cargo run --bin amperedctl -- --socket /tmp/ampered.sock watch
 ```
 
-Do not run a development instance next to the system service on the same
+Do not run a development agent next to the system one on the same
 compositor — both would dim.
 
 ## Install
@@ -49,11 +51,10 @@ cargo install --path .
 sudo install -Dm644 examples/ampered.toml /etc/ampered/ampered.toml
 sudo install -Dm644 contrib/ampered.service /etc/systemd/system/ampered.service
 sudo systemctl enable --now ampered
-amperedctl status
-
-# split mode: privilege = "split" in the config, plus the agent in the session
+# the agent in the session; the user must be in [general] socket_group
 install -Dm644 contrib/ampered-agent.service ~/.config/systemd/user/ampered-agent.service
 systemctl --user enable --now ampered-agent
+amperedctl status
 ```
 
 Details, including the checklist for the server scenario, are in

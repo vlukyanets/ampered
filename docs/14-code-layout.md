@@ -10,14 +10,14 @@
   - `examples/ampered.toml`
   - `contrib/`
     - `ampered.service`
-    - `90-ampered-backlight.rules`
+    - `ampered-agent.service`
   - `src/`
-    - `main.rs` — bootstrap: config, logging, spawning actors, the Command loop; `Session` picks local Wayland or the agent
+    - `main.rs` — bootstrap: config, logging, spawning actors, the Command loop; `idle` and `display` are reached through `AgentLink`
     - `lib.rs` — `pub mod *`, for tests and `amperedctl`
     - `config.rs` — structs + `validate()`
     - `core.rs` — `State`, `Event`, `Command`, `Engine::handle`
-    - `idle.rs` — the `ext-idle-notify-v1` Watcher, plus the `wlr-output-power-management` client on the same connection
-    - `display.rs` — DPMS backends; `wlr` goes through `idle::IdleHandle`
+    - `idle.rs` — the `ext-idle-notify-v1` Watcher, plus the `wlr-output-power-management` client on the same connection (runs in the agent)
+    - `display.rs` — DPMS backends; `wlr` goes through `idle::IdleHandle` (runs in the agent)
     - `backlight.rs` — the sysfs backlight Controller
     - `logind.rs` — the zbus login1 Client
     - `logind_conf.rs` — `logind.conf` + drop-ins, read for the lid-switch and IdleAction checks
@@ -37,9 +37,10 @@
       - `amperedctl.rs`
       - `ampered-agent.rs` — the session agent: `idle` + `display` as the user, over the IPC socket
 
-One crate, three binaries. The agent reuses `idle` and `display` unchanged
-and the IPC types, so a workspace would only split a library that all three
-binaries want whole (ADR-16).
+One crate, three binaries. Only the agent links `idle` and `display` into
+a running process; the daemon reaches them through `agent::AgentLink`.
+They stay in the one library with the IPC types because a workspace would
+only split a crate that all three binaries want whole (ADR-16).
 
 ## Traits for testability
 
@@ -65,7 +66,7 @@ depends on none of them — only `main.rs` wires commands to their executors.
 | `clap` (derive) | CLI | |
 | `tracing`, `tracing-subscriber` (env-filter) | logging | `log` — no spans |
 | `thiserror`, `anyhow` | errors | |
-| `nix` (user, signal, fs, socket, net) | setuid for commands, netlink udev, socket group | raw `libc` — less type safety |
+| `nix` (user, signal, fs, socket, net) | socket group lookup and chown, netlink udev, signals | raw `libc` — less type safety |
 | `tempfile` (dev) | sysfs fake tests | |
 
 `udev` (libudev) was rejected in favour of raw netlink — see ADR-12, and

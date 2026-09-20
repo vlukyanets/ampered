@@ -87,7 +87,6 @@ pub mod duration_str {
 #[serde(deny_unknown_fields, default)]
 pub struct Config {
     pub general: General,
-    pub wayland: Wayland,
     pub idle: Idle,
     pub backlight: Backlight,
     pub display: Display,
@@ -104,8 +103,6 @@ pub struct General {
     pub log_level: String,
     pub socket: PathBuf,
     pub socket_group: String,
-    /// Who owns the Wayland connection (`docs/03-privileges.md`).
-    pub privilege: Privilege,
 }
 
 impl Default for General {
@@ -114,26 +111,6 @@ impl Default for General {
             log_level: "info".into(),
             socket: "/run/ampered/ampered.sock".into(),
             socket_group: "users".into(),
-            privilege: Privilege::Root,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields, default)]
-pub struct Wayland {
-    pub runtime_dir: PathBuf,
-    pub display: String,
-    #[serde(deserialize_with = "de_duration")]
-    pub reconnect_max_backoff: Duration,
-}
-
-impl Default for Wayland {
-    fn default() -> Self {
-        Self {
-            runtime_dir: "/run/user/1000".into(),
-            display: "wayland-1".into(),
-            reconnect_max_backoff: Duration::from_secs(60),
         }
     }
 }
@@ -174,17 +151,7 @@ impl Default for Backlight {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum Privilege {
-    /// The daemon talks to the compositor itself.
-    #[default]
-    Root,
-    /// `ampered-agent` in the user session does (ADR-16).
-    Split,
-}
-
-/// Travels to the agent as-is in split mode, hence `Serialize`.
+/// Travels to the agent as-is (`docs/03-privileges.md`), hence `Serialize`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]
 pub struct Display {
@@ -583,15 +550,9 @@ mod tests {
     fn defaults_match_the_reference() {
         let config = Config::default();
         assert_eq!(config.general.log_level, "info");
-        assert_eq!(config.general.privilege, Privilege::Root);
         assert_eq!(
             config.general.socket,
             PathBuf::from("/run/ampered/ampered.sock")
-        );
-        assert_eq!(config.wayland.display, "wayland-1");
-        assert_eq!(
-            config.wayland.reconnect_max_backoff,
-            Duration::from_secs(60)
         );
         assert_eq!(config.idle.fallback, IdleFallback::None);
         assert_eq!(config.backlight.device, "auto");

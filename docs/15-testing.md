@@ -50,6 +50,7 @@
 ```sh
 # 1. Idle without sysfs permissions (dim will warn!, but the FSM is visible in watch)
 RUST_LOG=ampered=debug cargo run -- --config examples/ampered.toml --socket /tmp/a.sock &
+cargo run --bin ampered-agent -- --socket /tmp/a.sock &
 cargo run --bin amperedctl -- --socket /tmp/a.sock watch
 
 # 2. A fake power source to check auto-switching
@@ -59,5 +60,6 @@ cargo run -- --socket /tmp/a.sock --fake-power bat:15
 #    check_interval = "2m", awake_window = "20s"; keep `watch` running in another terminal
 ```
 
-**Warning:** do not run a dev instance alongside the system `ampered.service`
-on the same compositor — both will dim.
+**Warning:** do not run a dev `ampered-agent` alongside the system one on
+the same compositor — both will dim. A dev daemon on its own socket needs
+its own agent (`--socket /tmp/a.sock`) to see the compositor at all.

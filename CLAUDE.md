@@ -18,7 +18,9 @@ hibernate at critical battery.
 
 ## Stack and constraints
 
-- Rust, edition 2024, MSRV 1.98. Async — `tokio`. Single process, actors on channels.
+- Rust, edition 2024, MSRV 1.98. Async — `tokio`. Two processes: the root
+  daemon `ampered` (actors on channels) and the session agent
+  `ampered-agent`, which owns the Wayland side (`docs/03-privileges.md`).
 - Wayland: `wayland-client` 0.31, `ext-idle-notify-v1` (staging), `wlr-output-power-management`.
 - D-Bus: `zbus` (logind only). No UPower — we read `/sys/class/power_supply` ourselves.
 - Config: TOML (`serde` + `toml` + `humantime-serde`). CLI: `clap`.
@@ -32,7 +34,7 @@ hibernate at critical battery.
 | `docs/00-overview.md` | Goals, scenarios, what we do NOT do |
 | `docs/01-architecture.md` | Components, event flows |
 | `docs/02-state-machine.md` | FSM: states, events, commands, transition table |
-| `docs/03-privileges.md` | Root vs. user Wayland socket |
+| `docs/03-privileges.md` | Root daemon + session agent: who does what |
 | `docs/04-idle-wayland.md` | `ext-idle-notify-v1`, fallbacks |
 | `docs/05-backlight.md` | sysfs backlight, dim/restore, edge cases |
 | `docs/06-display-dpms.md` | Turning the screen off |
@@ -95,6 +97,8 @@ cargo fmt --check
 ## What not to do
 
 - Don't replace logind: sleep only through `org.freedesktop.login1`.
+- Don't open Wayland or run compositor helpers from the daemon — that is
+  the agent's job (ADR-17).
 - Don't implement idle-inhibit — that's the compositor's job.
 - Don't pull in UPower, don't pull in GTK/Qt, no tray icon.
 - Don't write to sysfs knobs that aren't documented in the mode.

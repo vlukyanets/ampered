@@ -6,6 +6,7 @@ rust-version = "1.98"
 license = "Unlicense"
 description = "Power management daemon for Linux laptops under Wayland"
 readme = "README.md"
+default-run = "ampered"
 
 [lib]
 name = "ampered"

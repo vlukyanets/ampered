@@ -328,7 +328,7 @@ impl Engine {
 
     /// A validated replacement config (SIGHUP, `amperedctl reload`).
     ///
-    /// `[general] socket` and `[wayland]` are not re-read — see
+    /// `[general] socket` is not re-read — see
     /// `docs/12-configuration.md`; `main` warns about that.
     pub fn set_config(&mut self, config: Arc<Config>) -> Vec<Command> {
         self.config = config;

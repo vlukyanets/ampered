@@ -294,7 +294,7 @@ pub async fn listen(
     path: &Path,
     group: &str,
     events: mpsc::Sender<Event>,
-    agent: Option<AgentLink>,
+    agent: AgentLink,
 ) -> io::Result<Server> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -357,7 +357,7 @@ async fn serve_connection(
     stream: UnixStream,
     server: Server,
     events: mpsc::Sender<Event>,
-    agent: Option<AgentLink>,
+    agent: AgentLink,
 ) -> io::Result<()> {
     let uid = stream.peer_cred().ok().map(|cred| cred.uid());
     let (read_half, mut write_half) = stream.into_split();
@@ -384,16 +384,8 @@ async fn serve_connection(
             return stream_events(lines, write_half, server.broadcast.subscribe()).await;
         }
         if matches!(request, Request::Agent) {
-            let Some(link) = agent else {
-                write_line(
-                    &mut write_half,
-                    &Response::error("[general] privilege is not \"split\""),
-                )
-                .await?;
-                return Ok(());
-            };
             write_line(&mut write_half, &Response::Ok).await?;
-            return serve_agent(lines, write_half, link, uid, events).await;
+            return serve_agent(lines, write_half, agent, uid, events).await;
         }
 
         let id = server.take_id();
@@ -555,7 +547,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ampered.sock");
         let (events_tx, mut events_rx) = mpsc::channel(8);
-        let server = listen(&path, "", events_tx, None).await.unwrap();
+        let link = AgentLink::new(&DisplayConfig::default());
+        let server = listen(&path, "", events_tx, link).await.unwrap();
 
         let (mut lines, mut write) = client(&path).await;
         send(&mut write, r#"{"cmd":"status"}"#).await;
@@ -568,11 +561,6 @@ mod tests {
         send(&mut write, "not json").await;
         let line = lines.next_line().await.unwrap().unwrap();
         assert!(line.contains("bad request"), "{line}");
-
-        // No split mode: the agent is turned away.
-        send(&mut write, r#"{"cmd":"agent"}"#).await;
-        let line = lines.next_line().await.unwrap().unwrap();
-        assert!(line.contains("privilege"), "{line}");
     }
 
     #[tokio::test]
@@ -581,9 +569,7 @@ mod tests {
         let path = dir.path().join("ampered.sock");
         let (events_tx, mut events_rx) = mpsc::channel(8);
         let link = AgentLink::new(&DisplayConfig::default());
-        let _server = listen(&path, "", events_tx, Some(link.clone()))
-            .await
-            .unwrap();
+        let _server = listen(&path, "", events_tx, link.clone()).await.unwrap();
         let stages = Stages {
             dim: Some(Duration::from_secs(120)),
             ..Stages::NONE
@@ -645,9 +631,7 @@ mod tests {
         let path = dir.path().join("ampered.sock");
         let (events_tx, mut events_rx) = mpsc::channel(8);
         let link = AgentLink::new(&DisplayConfig::default());
-        let _server = listen(&path, "", events_tx, Some(link.clone()))
-            .await
-            .unwrap();
+        let _server = listen(&path, "", events_tx, link.clone()).await.unwrap();
 
         let (mut first_lines, mut first_write) = client(&path).await;
         send(&mut first_write, r#"{"cmd":"agent"}"#).await;

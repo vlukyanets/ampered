@@ -10,16 +10,10 @@ Unknown keys are an error (`deny_unknown_fields`).
 |---|---|---|
 | `log_level` | `"info"` | `error`…`trace`; `RUST_LOG` takes priority |
 | `socket` | `"/run/ampered/ampered.sock"` | IPC socket (not re-read on reload) |
-| `privilege` | `"root"` | `root` / `split`: who owns the Wayland connection, see `docs/03-privileges.md` (not re-read on reload) |
 | `socket_group` | `"users"` | Group allowed to write to the socket |
 
-## `[wayland]`
-
-| Key | Default | Description |
-|---|---|---|
-| `runtime_dir` | `"/run/user/1000"` | User's `XDG_RUNTIME_DIR` |
-| `display` | `"wayland-1"` | Compositor socket name |
-| `reconnect_max_backoff` | `"60s"` | Backoff ceiling |
+There is no Wayland section: the compositor is reached by `ampered-agent`
+from the session's own environment (`docs/03-privileges.md`).
 
 ## `[idle]`
 
@@ -98,4 +92,4 @@ disabled. `sysfs` paths must be absolute; values are strings or integers.
 `SIGHUP` / `amperedctl reload`: the file is re-read and validated in
 full. On error, the old config stays in effect, and the error is logged
 and returned to the CLI. On success: idle stages are recreated, the
-current mode is reapplied. `[general].socket` and `[wayland]` require a restart.
+current mode is reapplied. `[general].socket` requires a restart.

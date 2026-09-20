@@ -2,24 +2,25 @@
 //!
 //! Reference: `docs/06-display-dpms.md`. The `wlr` backend talks to the
 //! compositor through the idle watcher's connection (`idle::IdleHandle`);
-//! `command` runs a helper as the session user.
+//! `command` runs a helper. Like `idle`, this runs in `ampered-agent` as
+//! the session user (`docs/03-privileges.md`), so the helper needs no
+//! `setuid` — only the compositor's environment.
 
-use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
 use tokio::process::Command;
 use tracing::{debug, info, warn};
 
-use crate::config::{Config, Display as DisplayConfig, DisplayBackend, Wayland as WaylandConfig};
-use crate::idle::IdleHandle;
+use crate::config::{Display as DisplayConfig, DisplayBackend};
+use crate::idle::{Compositor, IdleHandle};
 
 /// A compositor helper that hangs must not hang the daemon with it.
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct Display {
     backend: Backend,
-    session: Session,
+    compositor: Compositor,
     /// Idempotency lives here, not in the FSM (`docs/06-display-dpms.md`).
     /// `None` means "unknown", which is also where a failed command leaves it.
     last: Option<bool>,
@@ -38,28 +39,9 @@ enum Backend {
     None,
 }
 
-/// What a helper needs in order to find the compositor it should talk to.
-#[derive(Clone, Debug)]
-struct Session {
-    runtime_dir: PathBuf,
-    display: String,
-    user: Option<SessionUser>,
-}
-
-#[derive(Clone, Debug)]
-struct SessionUser {
-    uid: u32,
-    gid: u32,
-    home: PathBuf,
-}
-
 impl Display {
-    pub fn from_config(config: &Config, idle: IdleHandle) -> Display {
-        Display::new(&config.display, &config.wayland, idle)
-    }
-
-    /// `wayland` says where the compositor is, for the `command` helper.
-    pub fn new(display: &DisplayConfig, wayland: &WaylandConfig, idle: IdleHandle) -> Display {
+    /// `compositor` says where the compositor is, for the `command` helper.
+    pub fn new(display: &DisplayConfig, compositor: &Compositor, idle: IdleHandle) -> Display {
         let backend = match display.backend {
             DisplayBackend::Command => {
                 // Validation guarantees both commands are present.
@@ -84,7 +66,7 @@ impl Display {
         };
         Display {
             backend,
-            session: Session::discover(&wayland.runtime_dir, &wayland.display),
+            compositor: compositor.clone(),
             last: None,
         }
     }
@@ -140,41 +122,23 @@ impl Display {
         // A helper that failed leaves the panel in an unknown state, so the
         // repeat check must not latch: `Screen(true)` on resume and on
         // shutdown has to be free to try again.
-        self.last = self.session.run(&command).await.then_some(on);
-    }
-}
-
-impl Session {
-    fn discover(runtime_dir: &Path, display: &str) -> Session {
-        Session {
-            runtime_dir: runtime_dir.to_path_buf(),
-            display: display.to_string(),
-            user: SessionUser::owning(runtime_dir),
-        }
+        self.last = self.run(&command).await.then_some(on);
     }
 
-    /// Runs the helper as the owner of `runtime_dir`: `swaymsg` and friends
-    /// need that uid to reach the compositor's socket (`docs/03-privileges.md`).
+    /// Runs the helper with the compositor's environment: `swaymsg` and
+    /// friends find their socket through it, and `--runtime-dir`/`--display`
+    /// on the agent must reach them too.
     async fn run(&self, command: &str) -> bool {
         let mut child = Command::new("sh");
         child
             .arg("-c")
             .arg(command)
-            .env("XDG_RUNTIME_DIR", &self.runtime_dir)
-            .env("WAYLAND_DISPLAY", &self.display)
+            .env("XDG_RUNTIME_DIR", &self.compositor.runtime_dir)
+            .env("WAYLAND_DISPLAY", &self.compositor.display)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-
-        if let Some(user) = &self.user {
-            // Only root can change uid; as a normal user we are already the
-            // one who owns the session, or we would not have got this far.
-            if nix::unistd::Uid::effective().is_root() {
-                child.uid(user.uid).gid(user.gid);
-            }
-            child.env("HOME", &user.home);
-        }
 
         debug!(command, "running display command");
         let output = match tokio::time::timeout(TIMEOUT, child.output()).await {
@@ -200,34 +164,5 @@ impl Session {
             return false;
         }
         true
-    }
-}
-
-impl SessionUser {
-    fn owning(runtime_dir: &Path) -> Option<SessionUser> {
-        use std::os::unix::fs::MetadataExt;
-
-        let uid = match std::fs::metadata(runtime_dir) {
-            Ok(meta) => meta.uid(),
-            Err(err) => {
-                warn!(dir = %runtime_dir.display(), %err, "cannot stat the runtime directory");
-                return None;
-            }
-        };
-        match nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid)) {
-            Ok(Some(user)) => Some(SessionUser {
-                uid,
-                gid: user.gid.as_raw(),
-                home: user.dir,
-            }),
-            Ok(None) => {
-                warn!(uid, "the runtime directory belongs to an unknown user");
-                None
-            }
-            Err(err) => {
-                warn!(uid, %err, "cannot look up the session user");
-                None
-            }
-        }
     }
 }

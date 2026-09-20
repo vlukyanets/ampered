@@ -4,15 +4,20 @@
 
 | What | Where |
 |---|---|
-| `ampered`, `amperedctl` | `/usr/local/bin/` |
+| `ampered`, `ampered-agent`, `amperedctl` | `/usr/local/bin/` |
 | `examples/ampered.toml` | `/etc/ampered/ampered.toml` |
 | `contrib/ampered.service` | `/etc/systemd/system/` |
-| `contrib/90-ampered-backlight.rules` | `/etc/udev/rules.d/` (user/split mode only) |
+| `contrib/ampered-agent.service` | `~/.config/systemd/user/` (or `/etc/systemd/user/`) |
 
 ```sh
 sudo systemctl enable --now ampered
+systemctl --user enable --now ampered-agent
 amperedctl status
 ```
+
+Both units are needed on a laptop with a session: the daemon never talks
+to the compositor itself (`03-privileges.md`). A headless server runs the
+daemon alone.
 
 ## `contrib/ampered.service`
 
@@ -41,27 +46,27 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 RestrictAddressFamilies=AF_UNIX AF_NETLINK
 SystemCallFilter=@system-service
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_TIME CAP_SETUID CAP_SETGID CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_TIME CAP_NET_ADMIN
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-`ProtectHome=read-only` — the Wayland socket lives in `/run/user/*`, not
-in `$HOME`; but `off_command` might run something from `~/.local/bin` —
-read-only is enough for that. `CAP_SETUID/SETGID` is for running commands
-as the user (`03-privileges.md`), `CAP_NET_ADMIN` for the `power_supply`
+The daemon opens nothing in `/run/user/*` or `$HOME` — the compositor
+side is the agent's (`03-privileges.md`) — hence no `CAP_SETUID` and
+`ProtectHome=read-only`. `CAP_NET_ADMIN` is for the `power_supply`
 uevent socket (ADR-12). `Type=notify`: the daemon sends `READY=1` once the
 socket is listening and the mode is applied, `RELOADING=1`/`READY=1`
 around a reload, `STOPPING=1` on the way out, `STATUS=<state>, mode <name>`
 on every change, and `WATCHDOG=1` at half of `WatchdogSec` (ADR-14).
 Outside systemd there is no `NOTIFY_SOCKET` and all of it is a no-op.
 
-## `contrib/ampered-agent.service` (split mode)
+## `contrib/ampered-agent.service`
 
 A user unit, `systemctl --user enable --now ampered-agent`; the user must
-be in `[general] socket_group`. Set `privilege = "split"` in the daemon's
-config.
+be in `[general] socket_group`. It carries the idle watcher and the DPMS
+backend for the session, and reconnects with backoff when the daemon is
+restarted.
 
 ```ini
 [Unit]
@@ -80,15 +85,6 @@ WantedBy=graphical-session.target
 
 `XDG_RUNTIME_DIR` and `WAYLAND_DISPLAY` come from the session; the socket
 path is `--socket` (default `/run/ampered/ampered.sock`).
-
-## `contrib/90-ampered-backlight.rules`
-
-Only for running without root:
-
-```
-ACTION=="add", SUBSYSTEM=="backlight", RUN+="/bin/chgrp video /sys/class/backlight/%k/brightness", RUN+="/bin/chmod g+w /sys/class/backlight/%k/brightness"
-ACTION=="add", SUBSYSTEM=="leds", KERNEL=="*::kbd_backlight", RUN+="/bin/chgrp video /sys/class/leds/%k/brightness", RUN+="/bin/chmod g+w /sys/class/leds/%k/brightness"
-```
 
 ## Checklist for the server scenario
 

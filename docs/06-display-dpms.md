@@ -33,8 +33,9 @@ Mutter.
 
 ## `command` backend
 
-Arbitrary commands. Run as the uid that owns `runtime_dir` with
-`XDG_RUNTIME_DIR`/`WAYLAND_DISPLAY` set (`03-privileges.md`), 10s timeout.
+Arbitrary commands, run by `ampered-agent` as the session user through
+`sh -c`, with the session's own `XDG_RUNTIME_DIR`/`WAYLAND_DISPLAY`
+(`03-privileges.md`); 10s timeout.
 
 ```toml
 [display]

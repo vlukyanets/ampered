@@ -1,7 +1,7 @@
-//! The session agent for split mode: `idle` and `display` running as the
-//! user, over the daemon's IPC socket.
+//! The session agent: `idle` and `display` running as the user, over the
+//! daemon's IPC socket.
 //!
-//! See `docs/03-privileges.md` and ADR-16. The agent has no config file:
+//! See `docs/03-privileges.md`, ADR-16 and ADR-17. The agent has no config file:
 //! the daemon pushes `[display]` and the idle stages down the stream, and
 //! the compositor comes from the session's own environment.
 
@@ -17,10 +17,9 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use ampered::agent::{AgentEvent, AgentOp, parse_stages};
-use ampered::config::Wayland as WaylandConfig;
 use ampered::core::Event;
 use ampered::display::Display;
-use ampered::idle::{self, IdleHandle};
+use ampered::idle::{self, Compositor, IdleHandle};
 
 const DEFAULT_SOCKET: &str = "/run/ampered/ampered.sock";
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -29,7 +28,7 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 #[command(
     name = "ampered-agent",
     version,
-    about = "Session agent for ampered in split mode"
+    about = "Session agent for ampered: the compositor side, as the user"
 )]
 struct Cli {
     /// The daemon's socket.
@@ -59,7 +58,7 @@ fn main() -> Result<()> {
         .with_target(false)
         .init();
 
-    let wayland = WaylandConfig {
+    let compositor = Compositor {
         runtime_dir: cli
             .runtime_dir
             .clone()
@@ -70,20 +69,19 @@ fn main() -> Result<()> {
             .clone()
             .or_else(|| std::env::var("WAYLAND_DISPLAY").ok())
             .ok_or_else(|| anyhow!("no --display and no WAYLAND_DISPLAY"))?,
-        ..WaylandConfig::default()
     };
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run(cli, wayland))
+        .block_on(run(cli, compositor))
 }
 
-async fn run(cli: Cli, wayland: WaylandConfig) -> Result<()> {
+async fn run(cli: Cli, compositor: Compositor) -> Result<()> {
     let (events_tx, mut events_rx) = mpsc::channel::<Event>(64);
-    let idle = idle::spawn(wayland.clone(), events_tx);
+    let idle = idle::spawn(compositor.clone(), events_tx);
     let mut agent = Agent {
-        wayland,
+        compositor,
         idle,
         display: None,
         backend_connected: false,
@@ -145,7 +143,7 @@ async fn connect(socket: &PathBuf) -> Result<(Lines, OwnedWriteHalf)> {
 }
 
 struct Agent {
-    wayland: WaylandConfig,
+    compositor: Compositor,
     idle: IdleHandle,
     /// Built from the `display` op; none until the daemon sent one.
     display: Option<Display>,
@@ -187,7 +185,7 @@ impl Agent {
     async fn apply(&mut self, op: AgentOp, write: &mut OwnedWriteHalf) -> Result<()> {
         match op {
             AgentOp::Display(config) => {
-                self.display = Some(Display::new(&config, &self.wayland, self.idle.clone()));
+                self.display = Some(Display::new(&config, &self.compositor, self.idle.clone()));
                 self.report_display(write).await?;
             }
             AgentOp::Stages {

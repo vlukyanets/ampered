@@ -9,10 +9,6 @@ log_level = "info"
 socket = "/run/ampered/ampered.sock"
 socket_group = "users"
 
-[wayland]
-runtime_dir = "/run/user/1000"
-display = "wayland-1"
-
 [idle]
 fallback = "none"
 

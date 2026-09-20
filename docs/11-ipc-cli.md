@@ -68,7 +68,7 @@ After that each line is one of:
 ### The agent stream
 
 `{"cmd":"agent"}` registers the connection as the session agent
-(`03-privileges.md`, split mode). After the `{"ok":true}` the connection
+(`03-privileges.md`). After the `{"ok":true}` the connection
 is a stream in both directions, one JSON object per line.
 
 Daemon → agent (`op`):

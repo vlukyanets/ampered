@@ -26,7 +26,7 @@ The checked items are implemented. Tests: `config`, `core`, `backlight` and
 - [x] Persist manual mode (ADR-15)
 
 ## v0.3 — "security and reach"
-- [x] Split mode: `ampered-agent` over the IPC socket (ADR-16)
+- [x] `ampered-agent` owns the compositor side over the IPC socket (ADR-16); the root daemon no longer opens Wayland at all (ADR-17)
 - [ ] `mutter` idle backend (GNOME)
 - [x] Check `logind.conf` for `HandleLidSwitch` in server mode, and `IdleAction` always
 - [ ] Packages: AUR, nix flake
