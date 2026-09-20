@@ -3,7 +3,7 @@ name = "ampered"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.98"
-license = "MIT OR Apache-2.0"
+license = "Unlicense"
 description = "Power management daemon for Linux laptops under Wayland"
 readme = "README.md"
 
