@@ -24,9 +24,12 @@ One `wl_seat` — we take the first one from the registry. Multi-seat is not sup
 
 ## `idle::Watcher` lifecycle
 
-On `connect(runtime_dir/display)`: a failure triggers backoff (1s, 2s, 4s
-… up to `reconnect_max_backoff`) and a retry. On success, it walks the
-registry looking for `ext_idle_notifier_v1`: if it's missing, emit
+The watcher runs in `ampered-agent` (`03-privileges.md`) and connects to
+`$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY` from the session's environment
+(`--runtime-dir`/`--display` override it for a development run). A
+failure triggers backoff (1s, 2s, 4s … up to 60s) and a retry. On
+success, it walks the registry looking for `ext_idle_notifier_v1`: if
+it's missing, emit
 `Event::IdleBackendChanged(false)` and keep the connection open, waiting
 for the global to appear; if it's present, emit
 `Event::IdleBackendChanged(true)` and call `create_stages(current)`.
@@ -36,6 +39,7 @@ becomes `Event::Idle(stage)`; `resumed(stage)` becomes `Event::Activity`
 (only from the `dim` stage, or the first enabled one, so we don't send
 `Activity` three times); and the socket closing emits
 `Event::IdleBackendChanged(false)` and `Event::Activity`, then reconnects.
+All of these reach the daemon through the agent stream (`11-ipc-cli.md`).
 
 `Command::ReplaceIdleStages(stages)` → destroys all notifications, creates
 new ones. Called on mode change, reload, resume from sleep.

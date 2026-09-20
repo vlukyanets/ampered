@@ -6,9 +6,13 @@
 //! compositor does the counting and honours `idle-inhibit-unstable-v1` for
 //! us. The output power objects live here because the connection does; the
 //! `display` module decides when to use them.
+//!
+//! This runs in `ampered-agent`, as the session user (`docs/03-privileges.md`);
+//! the daemon reaches it through the agent stream.
 
 use std::os::fd::{AsFd, AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -28,10 +32,27 @@ use wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_powe
     self, ZwlrOutputPowerV1,
 };
 
-use crate::config::Wayland as WaylandConfig;
 use crate::core::{Event, Stage, Stages};
 
 pub const BACKEND: &str = "ext-idle-notify";
+
+/// The reconnect backoff ceiling (`docs/04-idle-wayland.md`).
+const RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(60);
+
+/// Where the compositor is: the session's `XDG_RUNTIME_DIR` and
+/// `WAYLAND_DISPLAY`, which the helpers of the `command` display backend
+/// inherit too.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Compositor {
+    pub runtime_dir: PathBuf,
+    pub display: String,
+}
+
+impl Compositor {
+    pub fn socket(&self) -> PathBuf {
+        self.runtime_dir.join(&self.display)
+    }
+}
 
 /// What the daemon asks of the connection.
 #[derive(Debug, Clone, Copy)]
@@ -64,12 +85,12 @@ impl IdleHandle {
     }
 }
 
-/// Connects to the compositor and keeps reconnecting for the daemon's lifetime.
-pub fn spawn(config: WaylandConfig, events: mpsc::Sender<Event>) -> IdleHandle {
+/// Connects to the compositor and keeps reconnecting for the agent's lifetime.
+pub fn spawn(compositor: Compositor, events: mpsc::Sender<Event>) -> IdleHandle {
     let (requests_tx, requests_rx) = mpsc::unbounded_channel();
     let output_power = Arc::new(AtomicBool::new(false));
     tokio::spawn(reconnect_loop(
-        config,
+        compositor,
         events,
         requests_rx,
         output_power.clone(),
@@ -81,12 +102,12 @@ pub fn spawn(config: WaylandConfig, events: mpsc::Sender<Event>) -> IdleHandle {
 }
 
 async fn reconnect_loop(
-    config: WaylandConfig,
+    compositor: Compositor,
     events: mpsc::Sender<Event>,
     mut requests_rx: mpsc::UnboundedReceiver<Request>,
     output_power: Arc<AtomicBool>,
 ) {
-    let socket = config.runtime_dir.join(&config.display);
+    let socket = compositor.socket();
     let mut backoff = Duration::from_secs(1);
     // Survives reconnects: the compositor gets the stages back as they were.
     // The screen state does not: a fresh compositor comes up with it on.
@@ -121,7 +142,7 @@ async fn reconnect_loop(
         }
 
         tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(config.reconnect_max_backoff);
+        backoff = (backoff * 2).min(RECONNECT_MAX_BACKOFF);
     }
 }
 
@@ -137,8 +158,8 @@ async fn session(
     stages: &mut Stages,
     output_power: &AtomicBool,
 ) -> bool {
-    // The system unit does not see `graphical-session.target`, so the socket
-    // path is configured explicitly (`docs/03-privileges.md`).
+    // The agent is started by `graphical-session.target`, but a compositor
+    // can still restart under it — hence the retry rather than an error.
     let connection = match UnixStream::connect(socket)
         .map_err(|err| err.to_string())
         .and_then(|stream| Connection::from_socket(stream).map_err(|err| err.to_string()))

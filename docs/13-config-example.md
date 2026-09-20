@@ -8,12 +8,6 @@
 log_level = "info"
 socket = "/run/ampered/ampered.sock"
 socket_group = "users"
-privilege = "root"
-
-[wayland]
-runtime_dir = "/run/user/1000"
-display = "wayland-1"
-reconnect_max_backoff = "60s"
 
 [idle]
 fallback = "none"

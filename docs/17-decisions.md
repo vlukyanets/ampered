@@ -7,6 +7,7 @@ a new entry; old ones are never edited (only marked "superseded by ADR-N").
 **2026-09.** Not one thread per module, not separate processes.
 Reason: simplicity, a single binary, all I/O async.
 Consequences: a panic in one actor brings the whole process down (accepted, `Restart=on-failure`).
+**Superseded in part by ADR-20:** the compositor side is a second process, `ampered-agent`.
 
 ## ADR-2 — FSM as a pure function
 **2026-09.** `Engine::handle(Event) -> Vec<Command>`, timers are also
@@ -30,10 +31,11 @@ write the alarm. Reason: `-m mem` bypasses logind (ADR-4); `wakealarm`
 accepts UTC regardless of the clock mode.
 Consequences: `echo 0` clears someone else's alarm — a known limitation.
 
-## ADR-6 — Root unit with an explicit Wayland socket path (v0.1) — superseded by ADR-16
+## ADR-6 — Root unit with an explicit Wayland socket path (v0.1) — superseded by ADR-20
 **2026-09.** No split mode, no polkit. Reason: minimal amount of code for
 a working v0.1. Consequences: a root process parses the user's Wayland
 protocol; a deliberate debt, closed by split mode in v0.3 (`03-privileges.md`).
+**Superseded by ADR-20.**
 
 ## ADR-7 — Our own `power_supply` parser, no UPower
 **2026-09.** Reason: two numbers aren't worth a D-Bus dependency and an
@@ -159,3 +161,17 @@ not take it back, so a user opening the lid at 9% was hibernated, while
 `docs/10-long-sleep-rtc.md` puts the user before the critical action.
 Consequences: one more event, handled like `Resumed` outside the cycle;
 the engine still has no clock.
+
+## ADR-20 — Daemon + agent is the only privilege model
+**2026-09.** The root daemon never opens a Wayland connection and never
+runs a compositor helper; `ampered-agent` in the session always does.
+`[general] privilege` and `[wayland]` are gone, and so is the "no root at
+all" deployment sketch. Reason: two code paths for the same job — one of
+them a root process parsing the session's protocol and `setuid`-ing for
+`swaymsg` (ADR-6) — doubled the surface to test and document for a
+convenience that split mode already provides without the debt; the udev
+`video` route could not reach `platform_profile` or cpufreq anyway, so it
+was never a real mode. Consequences: a laptop needs both units; the daemon
+drops `CAP_SETUID/SETGID`; `idle` and `display` are linked only into the
+agent; a machine with no session (a headless server) runs the daemon
+alone, exactly as an agent-less daemon did before. Supersedes ADR-6.
