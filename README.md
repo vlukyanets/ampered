@@ -68,4 +68,4 @@ for every config key. [`CLAUDE.md`](CLAUDE.md) is the map for anyone writing
 code here; [`docs/17-decisions.md`](docs/17-decisions.md) records why things
 are the way they are.
 
-License: MIT OR Apache-2.0.
+License: Unlicense (public domain), see [`LICENSE`](LICENSE).
