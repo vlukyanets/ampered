@@ -17,7 +17,10 @@ through logind, the `wlr` and `command` DPMS backends, `Type=notify` with
 a watchdog, and the long-sleep server cycle: lid closed, power lost, the
 machine sleeps with an RTC alarm, wakes to check for power, hibernates or
 powers off at a critical battery, and runs `resume_hook` once power is
-back. What comes next is in [`docs/18-roadmap.md`](docs/18-roadmap.md).
+back. Split mode (`privilege = "split"`) moves the compositor side into
+`ampered-agent` in the user session, so the root daemon never touches
+Wayland ([`docs/03-privileges.md`](docs/03-privileges.md)). What comes
+next is in [`docs/18-roadmap.md`](docs/18-roadmap.md).
 
 A missing subsystem is never fatal: no compositor, no backlight or no D-Bus
 leaves the daemon running in a degraded mode, which `amperedctl status`
@@ -47,6 +50,10 @@ sudo install -Dm644 examples/ampered.toml /etc/ampered/ampered.toml
 sudo install -Dm644 contrib/ampered.service /etc/systemd/system/ampered.service
 sudo systemctl enable --now ampered
 amperedctl status
+
+# split mode: privilege = "split" in the config, plus the agent in the session
+install -Dm644 contrib/ampered-agent.service ~/.config/systemd/user/ampered-agent.service
+systemctl --user enable --now ampered-agent
 ```
 
 Details, including the checklist for the server scenario, are in

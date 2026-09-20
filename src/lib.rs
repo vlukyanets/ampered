@@ -4,6 +4,7 @@
 //! (`src/bin/amperedctl.rs`) and the tests can share the same types. Start
 //! with `docs/01-architecture.md`; every module links to its own document.
 
+pub mod agent;
 pub mod backlight;
 pub mod config;
 pub mod core;
@@ -11,6 +12,7 @@ pub mod display;
 pub mod idle;
 pub mod ipc;
 pub mod logind;
+pub mod logind_conf;
 pub mod notify;
 pub mod power;
 pub mod sleep;

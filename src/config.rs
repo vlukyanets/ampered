@@ -8,7 +8,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// Upper bound for any idle timeout: a notification timeout is passed to the
 /// compositor in milliseconds as a `u32` (`docs/04-idle-wayland.md`).
@@ -104,6 +104,8 @@ pub struct General {
     pub log_level: String,
     pub socket: PathBuf,
     pub socket_group: String,
+    /// Who owns the Wayland connection (`docs/03-privileges.md`).
+    pub privilege: Privilege,
 }
 
 impl Default for General {
@@ -112,6 +114,7 @@ impl Default for General {
             log_level: "info".into(),
             socket: "/run/ampered/ampered.sock".into(),
             socket_group: "users".into(),
+            privilege: Privilege::Root,
         }
     }
 }
@@ -171,7 +174,18 @@ impl Default for Backlight {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Privilege {
+    /// The daemon talks to the compositor itself.
+    #[default]
+    Root,
+    /// `ampered-agent` in the user session does (ADR-16).
+    Split,
+}
+
+/// Travels to the agent as-is in split mode, hence `Serialize`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]
 pub struct Display {
     pub backend: DisplayBackend,
@@ -179,7 +193,7 @@ pub struct Display {
     pub on_command: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum DisplayBackend {
     #[default]
@@ -569,6 +583,7 @@ mod tests {
     fn defaults_match_the_reference() {
         let config = Config::default();
         assert_eq!(config.general.log_level, "info");
+        assert_eq!(config.general.privilege, Privilege::Root);
         assert_eq!(
             config.general.socket,
             PathBuf::from("/run/ampered/ampered.sock")

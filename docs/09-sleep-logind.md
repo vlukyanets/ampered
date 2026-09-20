@@ -69,8 +69,22 @@ HandleLidSwitchDocked=ignore
 ```
 
 If `HandleLidSwitch=suspend`, logind will sleep on lid close **without**
-an RTC alarm — the server cycle won't trigger. `amperedctl status` warns
-if `server.enabled` and `HandleLidSwitch != ignore` (reading it via
-`org.freedesktop.login1.Manager` properties isn't available; parsing
-`logind.conf` + drop-ins is on the roadmap; in v0.1 it's only mentioned in
-the docs).
+an RTC alarm — the server cycle won't trigger. These settings are not
+exposed on the bus, so `logind_conf` reads them the way logind does:
+the main file (`/etc/systemd/logind.conf`, else `/run`, `/usr/local/lib`,
+`/usr/lib`), then the drop-ins from all `logind.conf.d` directories
+merged and applied in file-name order, a same-named file in a
+higher-priority directory shadowing the others, and the `[Login]` section
+only. Defaults when a key is missing or commented out:
+`HandleLidSwitch=suspend`, `HandleLidSwitchExternalPower` = the value of
+`HandleLidSwitch`, `HandleLidSwitchDocked=ignore`, `IdleAction=ignore`.
+
+At startup and on every reload:
+
+- `server.enabled` and any of the three lid settings other than `ignore` →
+  `warn!` naming the key and `degraded: ["lid-switch"]`;
+- `IdleAction` other than `ignore`, in any mode → `warn!` and
+  `degraded: ["idle-action"]`: logind and ampered would both act on idle.
+
+Nothing is changed on disk; the fix is the drop-in above and
+`systemctl restart systemd-logind` (or a reboot).

@@ -12,7 +12,7 @@
     - `ampered.service`
     - `90-ampered-backlight.rules`
   - `src/`
-    - `main.rs` — bootstrap: config, logging, spawning actors, the Command loop
+    - `main.rs` — bootstrap: config, logging, spawning actors, the Command loop; `Session` picks local Wayland or the agent
     - `lib.rs` — `pub mod *`, for tests and `amperedctl`
     - `config.rs` — structs + `validate()`
     - `core.rs` — `State`, `Event`, `Command`, `Engine::handle`
@@ -20,6 +20,7 @@
     - `display.rs` — DPMS backends; `wlr` goes through `idle::IdleHandle`
     - `backlight.rs` — the sysfs backlight Controller
     - `logind.rs` — the zbus login1 Client
+    - `logind_conf.rs` — `logind.conf` + drop-ins, read for the lid-switch and IdleAction checks
     - `notify.rs` — `sd_notify` over `NOTIFY_SOCKET`, no libsystemd
     - `ipc.rs` — the NDJSON server + `Request`/`Response` types
     - `power/`
@@ -31,10 +32,14 @@
       - `rtc.rs` — `RtcAlarm`: Wakealarm, Rtcwake
       - `planner.rs` — server-cycle timers, hooks, `state.json`
     - `timers.rs` — `TimerId` → tokio task, emits `Event::Timer`
+    - `agent.rs` — the daemon's end of the agent stream (`AgentLink`), and the stream types
     - `bin/`
       - `amperedctl.rs`
+      - `ampered-agent.rs` — the session agent: `idle` + `display` as the user, over the IPC socket
 
-One crate, two binaries. No workspace is needed until `ampered-agent` shows up.
+One crate, three binaries. The agent reuses `idle` and `display` unchanged
+and the IPC types, so a workspace would only split a library that all three
+binaries want whole (ADR-16).
 
 ## Traits for testability
 

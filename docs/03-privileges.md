@@ -9,7 +9,7 @@ The daemon does two things that require incompatible permissions:
 - **user uid:** connecting to the Wayland socket in `$XDG_RUNTIME_DIR`,
   running `swaymsg`/`hyprctl` (which need the compositor's IPC socket).
 
-## v0.1 decision: system unit running as root
+## `privilege = "root"` (default): system unit running as root
 
 - `ampered.service` in `multi-user.target`, `User=root`.
 - The path to the compositor is given explicitly: `[wayland] runtime_dir`,
@@ -24,28 +24,41 @@ The daemon does two things that require incompatible permissions:
 
 Trade-off: a root process parses the Wayland protocol from a user session.
 The attack surface is small (we're only a client, only two protocols), but
-this is a deliberate piece of debt — see `17-decisions.md`.
+it is a piece of debt — see ADR-6 — that split mode pays off.
 
-## Alternatives (roadmap)
+## `privilege = "split"`: `ampered` (root) + `ampered-agent` (user)
 
-### Split: `ampered` (root) + `ampered-agent` (user)
+- `ampered` stays the root daemon: FSM, IPC, sysfs writes, logind, RTC,
+  power supply. It opens **no** Wayland connection and runs no compositor
+  helper.
+- `ampered-agent` is a small service in the user's
+  `graphical-session.target`. It owns everything that needs the session:
+  the `ext-idle-notify-v1` watcher, the `wlr` output-power client and the
+  `command` DPMS helper, all of them the same code as in root mode, now
+  simply running as the user with the session's own `XDG_RUNTIME_DIR` and
+  `WAYLAND_DISPLAY`. No `setuid` anywhere.
+- The two talk over the daemon's existing IPC socket, not D-Bus (ADR-16):
+  the agent connects like any client, sends `{"cmd":"agent"}` and the
+  connection turns into a two-way stream — idle events up, stages and
+  screen requests down (`11-ipc-cli.md`, "The agent stream"). The daemon
+  pushes the `[display]` section to the agent on registration and on every
+  reload, so the agent needs no config file of its own.
+- Authorization is the socket's: membership in `[general] socket_group`,
+  the same right that lets a user run `amperedctl sleep`. One agent at a
+  time; a new registration replaces the old stream (a compositor restart
+  starts a new agent), and the uid is logged from `SO_PEERCRED`.
+- Without an agent the daemon runs exactly as it does without a compositor:
+  no idle stages, `degraded: ["agent"]`, the logind `IdleHint` fallback if
+  enabled. The agent reconnects with backoff when the daemon restarts, and
+  the daemon re-sends the stages when it does.
 
-- `ampered` — stays the root daemon: FSM, IPC, sysfs writes, logind, RTC.
-  It exposes a D-Bus API `org.ampered.Priv` (`SetBacklight`, `ApplyMode`,
-  `SetWakeAlarm`, …) for the parts that need the user session.
-- `ampered-agent` — a tiny user-session service in `graphical-session.target`
-  that owns the Wayland connection (idle notifications, DPMS) and forwards
-  events/commands to `ampered` over that D-Bus API. A polkit rule
-  authorizes the active local session to talk to it.
-- Cleaner from a security standpoint, but two binaries, a D-Bus interface, polkit.
+What the daemon loses in split mode: nothing — `[wayland]` is simply unused.
+What it gains: a root process that never parses a byte from the session.
 
-### No root at all
+## Alternative: no root at all
 
 - udev gives the `video` group write access to `backlight` (`16-deployment.md`).
 - Sleep goes through logind; polkit authorizes the active session by default.
 - RTC — `rtcwake` via passwordless `sudoers`.
 - But `platform_profile` and cpufreq stay unreachable → modes degrade to
-  "timeouts only". Acceptable for some users.
-
-The privilege backend could be made configurable
-(`[general] privilege = "root" | "split"`), but not in v0.1.
+  "timeouts only". Acceptable for some users; not a mode of its own.

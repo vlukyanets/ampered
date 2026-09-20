@@ -9,6 +9,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::config::{Config, CriticalAction, Mode, ServerTrigger, SleepMethod, format_duration};
@@ -133,7 +134,8 @@ impl Stages {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Stage {
     Dim,
     ScreenOff,
@@ -952,9 +954,9 @@ impl Engine {
             Request::Reload => vec![Command::Reload { reply_to: Some(id) }],
             // `subscribe` never reaches the engine; the IPC server keeps those
             // connections attached to the broadcast channel itself.
-            Request::Subscribe => vec![Command::Reply(
+            Request::Subscribe | Request::Agent => vec![Command::Reply(
                 id,
-                Response::error("subscribe is handled by the IPC server"),
+                Response::error("handled by the IPC server, never by the engine"),
             )],
         }
     }

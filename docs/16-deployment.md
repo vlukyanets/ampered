@@ -57,6 +57,30 @@ around a reload, `STOPPING=1` on the way out, `STATUS=<state>, mode <name>`
 on every change, and `WATCHDOG=1` at half of `WatchdogSec` (ADR-14).
 Outside systemd there is no `NOTIFY_SOCKET` and all of it is a no-op.
 
+## `contrib/ampered-agent.service` (split mode)
+
+A user unit, `systemctl --user enable --now ampered-agent`; the user must
+be in `[general] socket_group`. Set `privilege = "split"` in the daemon's
+config.
+
+```ini
+[Unit]
+Description=ampered session agent
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/local/bin/ampered-agent
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
+```
+
+`XDG_RUNTIME_DIR` and `WAYLAND_DISPLAY` come from the session; the socket
+path is `--socket` (default `/run/ampered/ampered.sock`).
+
 ## `contrib/90-ampered-backlight.rules`
 
 Only for running without root:
@@ -68,7 +92,7 @@ ACTION=="add", SUBSYSTEM=="leds", KERNEL=="*::kbd_backlight", RUN+="/bin/chgrp v
 
 ## Checklist for the server scenario
 
-- [ ] `logind.conf`: `HandleLidSwitch*=ignore`, `IdleAction=ignore`
+- [ ] `logind.conf`: `HandleLidSwitch*=ignore`, `IdleAction=ignore` — `amperedctl status` reports `lid-switch` / `idle-action` in `degraded` otherwise
 - [ ] PPD/TLP disabled
 - [ ] `cat /sys/class/rtc/rtc0/wakealarm` exists; `.../device/power/wakeup` = `enabled`
 - [ ] Hibernate configured, if `critical_action = "hibernate"` (`systemctl hibernate` works manually)

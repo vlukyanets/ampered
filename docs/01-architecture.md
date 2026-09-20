@@ -24,6 +24,7 @@ planner. See the component table below for exactly what each side does.
 | `sleep::rtc` | RTC alarm (`wakealarm` / `rtcwake`) | `Command::ScheduleWake` | RTC |
 | `sleep::planner` | Wake classification, `resume_hook` | `Command::ScheduleWake`, `Event::Resumed` | `Event::Activity` for a wake by the user, `sh -c` |
 | `ipc` | NDJSON server over a Unix socket; `amperedctl` — a separate binary | socket | `Event::Ipc(req)` |
+| `agent` | Split mode (`03-privileges.md`): the daemon's end of the `ampered-agent` stream, standing in for `idle` and `display` | `Command::ReplaceIdleStages`, `Command::Screen` | `Event::Idle`, `Event::Activity`, `Event::IdleBackendChanged` |
 
 ## Key flows
 
