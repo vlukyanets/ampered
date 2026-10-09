@@ -98,7 +98,7 @@ enum Command {
 | LongSleep(*) | Ipc(LongSleep{cancel}) | — | Active | CancelTimer(*), CancelWake, Undim, Screen(true), ReplaceIdleStages |
 | * | Ipc(Mode(name)) | — | — | ApplyMode, ReplaceIdleStages, Reply |
 | * | ReloadRequested | — | — | Reload |
-| * | ShutdownRequested | — | — | Undim, Screen(true), Shutdown |
+| * | ShutdownRequested | — | — | CancelWake (in LongSleep), Undim, Screen(true), Shutdown |
 
 The full set of `LongSleep` transitions is in `10-long-sleep-rtc.md`.
 

@@ -445,9 +445,16 @@ impl Engine {
             Event::WakeScheduled(armed) => self.on_wake_scheduled(armed),
             Event::ReloadRequested => vec![Command::Reload { reply_to: None }],
             Event::ShutdownRequested => {
+                // An alarm left armed would wake — or power on — the machine
+                // after we are gone (`docs/10-long-sleep-rtc.md`).
+                let mut commands = Vec::new();
+                if let State::LongSleep(_) = self.state {
+                    commands.push(Command::CancelWake);
+                }
                 // Never leave the user with a dark screen (`docs/02-state-machine.md`).
                 self.state = State::Active;
-                vec![Command::Undim, Command::Screen(true), Command::Shutdown]
+                commands.extend([Command::Undim, Command::Screen(true), Command::Shutdown]);
+                commands
             }
         }
     }
@@ -2424,6 +2431,25 @@ mod tests {
         assert_eq!(engine.state(), State::Active);
     }
 
+    /// Stopping the daemon mid-cycle must not leave the RTC alarm armed:
+    /// many laptops power on from it, even from poweroff.
+    #[test]
+    fn shutdown_in_the_cycle_clears_the_alarm() {
+        for phase in [Phase::Grace, Phase::Armed, Phase::Checking] {
+            let mut engine = server_in(phase);
+            assert_eq!(
+                effects(engine.handle(Event::ShutdownRequested)),
+                vec![
+                    Command::CancelWake,
+                    Command::Undim,
+                    Command::Screen(true),
+                    Command::Shutdown
+                ],
+                "{phase}"
+            );
+        }
+    }
+
     /// The cycle owns sleeping; a manual suspend would leave its alarm armed.
     #[test]
     fn ipc_sleep_is_refused_in_the_cycle() {
@@ -2658,15 +2684,6 @@ mod tests {
         assert_eq!(
             effects(engine.handle(Event::Timer(TimerId::AwakeWindow))),
             vec![Command::ScheduleWake(CHECK_INTERVAL)]
-        );
-    }
-
-    #[test]
-    fn shutdown_in_the_cycle_restores_the_screen() {
-        let mut engine = server_in(Phase::Checking);
-        assert_eq!(
-            effects(engine.handle(Event::ShutdownRequested)),
-            vec![Command::Undim, Command::Screen(true), Command::Shutdown]
         );
     }
 }

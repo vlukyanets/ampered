@@ -60,6 +60,7 @@ While in `LongSleep`, idle stages are not created
 | Checking | Timer(AwakeWindow) | battery ≤ critical | Checking | Broadcast(critical), the critical action, StartTimer(AwakeWindow) |
 | Checking | Timer(AwakeWindow) | otherwise | Armed | ScheduleWake |
 | Any LongSleep | Ipc(LongSleep{cancel}) | | Active | CancelTimer(*), CancelWake |
+| Any LongSleep | ShutdownRequested | | Active | CancelWake, Undim, Screen(true), Shutdown — many laptops power on from an armed alarm, even from poweroff |
 
 `*` — Active, Dimmed, ScreenOff.
 
