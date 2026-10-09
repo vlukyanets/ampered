@@ -57,6 +57,7 @@ on_command  = "swaymsg 'output * power on'"
 
 The `screen_off` stage exists in the FSM but does nothing. Useful when the
 compositor turns the screen off on its own.
+A deliberate choice, so it never shows in `status.degraded`.
 
 ## `Engine` behavior
 

@@ -95,7 +95,8 @@ impl Display {
         match &self.backend {
             Backend::Wlr { idle, fallback } => idle.output_power_available() || fallback.is_some(),
             Backend::Command { .. } => true,
-            Backend::None => false,
+            // Chosen on purpose: nothing is missing.
+            Backend::None => true,
         }
     }
 
@@ -229,5 +230,21 @@ impl SessionUser {
                 None
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `none` is a deliberate choice, not a missing subsystem.
+    #[test]
+    fn none_backend_is_available() {
+        let display = Display {
+            backend: Backend::None,
+            session: Session::discover(Path::new("/nonexistent"), "wayland-0"),
+            last: None,
+        };
+        assert!(display.is_available());
     }
 }
