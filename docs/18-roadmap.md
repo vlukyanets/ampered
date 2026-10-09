@@ -25,7 +25,7 @@ The checked items are implemented. Tests: see `docs/15-testing.md`.
 - [x] Persist manual mode (ADR-15)
 
 ## v0.3 — "security and reach"
-- [x] Split mode: `ampered-agent` over the IPC socket (ADR-16)
+- [x] `ampered-agent` owns the compositor side over the IPC socket (ADR-16); the root daemon no longer opens Wayland at all (ADR-20)
 - [x] Check `logind.conf` for `HandleLidSwitch` in server mode, and `IdleAction` always
 - [ ] Packages: AUR
 
