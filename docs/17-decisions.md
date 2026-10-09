@@ -30,7 +30,7 @@ write the alarm. Reason: `-m mem` bypasses logind (ADR-4); `wakealarm`
 accepts UTC regardless of the clock mode.
 Consequences: `echo 0` clears someone else's alarm — a known limitation.
 
-## ADR-6 — Root unit with an explicit Wayland socket path (v0.1)
+## ADR-6 — Root unit with an explicit Wayland socket path (v0.1) — superseded by ADR-16
 **2026-09.** No split mode, no polkit. Reason: minimal amount of code for
 a working v0.1. Consequences: a root process parses the user's Wayland
 protocol; a deliberate debt, closed by split mode in v0.3 (`03-privileges.md`).

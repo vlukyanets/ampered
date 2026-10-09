@@ -4,10 +4,14 @@
 
 | What | Where |
 |---|---|
-| `ampered`, `amperedctl` | `/usr/local/bin/` |
+| `ampered`, `amperedctl`, `ampered-agent` | `/usr/local/bin/` (`cargo install --path . --root /usr/local`) |
 | `examples/ampered.toml` | `/etc/ampered/ampered.toml` |
 | `contrib/ampered.service` | `/etc/systemd/system/` |
-| `contrib/90-ampered-backlight.rules` | `/etc/udev/rules.d/` (user/split mode only) |
+| `contrib/ampered-agent.service` | `~/.config/systemd/user/` (split mode only) |
+| `contrib/90-ampered-backlight.rules` | `/etc/udev/rules.d/` (only for running without root) |
+
+A plain `cargo install --path .` puts the binaries in `~/.cargo/bin`, which
+the units do not use.
 
 ```sh
 sudo systemctl enable --now ampered
@@ -102,4 +106,4 @@ ACTION=="add", SUBSYSTEM=="leds", KERNEL=="*::kbd_backlight", RUN+="/bin/chgrp v
 
 ## Distribution packages
 
-Packaging (AUR, nix, deb) is v0.3. For now, `cargo install --path .`.
+Packaging (AUR, nix, deb) is v0.3. For now, `cargo install --path . --root /usr/local`.

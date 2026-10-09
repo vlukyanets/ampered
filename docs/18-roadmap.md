@@ -2,8 +2,7 @@
 
 ## v0.1 — "works on my laptop"
 
-The checked items are implemented. Tests: `config`, `core`, `backlight` and
-`power::supply` are in the tree; the rest is listed in `docs/15-testing.md`.
+The checked items are implemented. Tests: see `docs/15-testing.md`.
 - [x] `config`: parsing, validation, a test against the example
 - [x] `core`: FSM + table-driven tests (no `LongSleep`)
 - [x] `ipc` + `amperedctl status|mode|modes|watch|reload`
@@ -40,3 +39,4 @@ The checked items are implemented. Tests: `config`, `core`, `backlight` and
 - Multi-seat
 - User notifications before sleep (via `notify-send` as the uid) — or is that out of scope?
 - `amperedctl` shell completion, man pages
+- Split `core.rs` (and the modules past ~600 lines) as `14-code-layout.md` asks

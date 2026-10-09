@@ -21,7 +21,8 @@ hibernate at critical battery.
 - Rust, edition 2024, MSRV 1.98. Async — `tokio`. Single process, actors on channels.
 - Wayland: `wayland-client` 0.31, `ext-idle-notify-v1` (staging), `wlr-output-power-management`.
 - D-Bus: `zbus` (logind only). No UPower — we read `/sys/class/power_supply` ourselves.
-- Config: TOML (`serde` + `toml` + `humantime-serde`). CLI: `clap`.
+- Config: TOML (`serde` + `toml` + `humantime`, with our own deserializer — see
+  `docs/14-code-layout.md`). CLI: `clap`.
 - Logs: `tracing`. Errors: `thiserror` in modules, `anyhow` only in binaries.
 - No `unsafe` without a "why" comment. No `unwrap()` outside tests.
 
@@ -53,13 +54,14 @@ hibernate at critical battery.
 
 1. **Only `core::Engine` makes decisions.** `Engine::handle(Event) -> Vec<Command>`
    — a pure function with no I/O. Modules don't call each other directly.
-2. **Anything that touches the system sits behind a trait** with a `Fake*`
-   implementation for tests (`BacklightSink`, `RtcAlarm`, `PowerSource`,
-   `SleepBackend`, `IdleSource`).
+2. **Anything that touches sysfs sits behind a trait** with a fake or a
+   tempdir root for tests (`BacklightSink`, `PowerSource`, `ModeSink`,
+   `RtcAlarm`). logind (D-Bus) and the Wayland client are concrete, with no
+   trait; keep their logic in pure functions that can be tested alone.
 3. **A missing subsystem is not an error.** No compositor, no backlight, no
    RTC — the module is `unavailable`, the daemon runs degraded and shows
-   this in `amperedctl status`. The only thing allowed to crash on is an
-   invalid config.
+   this in `amperedctl status`. The only things allowed to stop startup are
+   an invalid config and another ampered already running (ADR-18).
 4. **Transitions are idempotent.** `dim` while already `Dimmed` is a no-op.
 5. **A sysfs write error does not block the FSM transition** — `warn!` and move on.
 6. **Documentation is the source of truth.** Changing behavior means
@@ -86,7 +88,7 @@ hibernate at critical battery.
 ```sh
 cargo build
 cargo test
-cargo run -- --config examples/ampered.toml --check   # examples/ is generated from docs/13-config-example.md
+cargo run -- --config examples/ampered.toml --check   # kept identical to docs/13-config-example.md; a test checks it
 RUST_LOG=ampered=debug cargo run -- --socket /tmp/ampered.sock
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check

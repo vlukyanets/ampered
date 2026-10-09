@@ -98,4 +98,5 @@ disabled. `sysfs` paths must be absolute; values are strings or integers.
 `SIGHUP` / `amperedctl reload`: the file is re-read and validated in
 full. On error, the old config stays in effect, and the error is logged
 and returned to the CLI. On success: idle stages are recreated, the
-current mode is reapplied. `[general].socket` and `[wayland]` require a restart.
+current mode is reapplied. `[general].socket`, `[general].privilege` and
+`[wayland]` require a restart.
