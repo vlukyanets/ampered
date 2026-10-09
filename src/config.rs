@@ -410,6 +410,15 @@ impl Config {
     /// An invalid config is the only thing the daemon refuses to start on
     /// (`CLAUDE.md`, rule 3), so this is deliberately strict.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        const LEVELS: [&str; 5] = ["error", "warn", "info", "debug", "trace"];
+        if !LEVELS.contains(&self.general.log_level.as_str()) {
+            return invalid(format!(
+                "[general] log_level = {:?}: must be one of {}",
+                self.general.log_level,
+                LEVELS.join(", ")
+            ));
+        }
+
         for (name, mode) in &self.modes {
             mode.validate(name)?;
         }
@@ -636,6 +645,23 @@ mod tests {
         let command = display("backend = \"command\"\noff_command = \"x\"\n");
         let err = Config::parse(&command).unwrap().validate().unwrap_err();
         assert!(err.to_string().contains("requires both"), "{err}");
+    }
+
+    #[test]
+    fn log_level_accepts_the_five_levels() {
+        for level in ["error", "warn", "info", "debug", "trace"] {
+            let text = EXAMPLE.replace("log_level = \"info\"", &format!("log_level = \"{level}\""));
+            assert!(Config::parse(&text).unwrap().validate().is_ok(), "{level}");
+        }
+    }
+
+    #[test]
+    fn log_level_rejects_a_directive() {
+        let text = EXAMPLE.replace("log_level = \"info\"", "log_level = \"ampered=debug\"");
+        let err = Config::parse(&text).unwrap().validate().unwrap_err();
+        let err = err.to_string();
+        assert!(err.contains("log_level"), "{err}");
+        assert!(err.contains("error, warn, info, debug, trace"), "{err}");
     }
 
     #[test]
