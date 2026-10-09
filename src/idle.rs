@@ -215,6 +215,10 @@ async fn session(
             debug!(%err, "wayland dispatch failed");
             return watcher.announced;
         }
+        // The registry may just have announced the manager, maybe in the
+        // same batch as the notifier: refresh the flag before the events
+        // that make the agent read it.
+        output_power.store(watcher.power_manager.is_some(), Ordering::Relaxed);
         for event in watcher.outgoing.drain(..) {
             if events.send(event).await.is_err() {
                 return watcher.announced;
@@ -242,7 +246,6 @@ async fn session(
                     // The daemon is going away.
                     None => return watcher.announced,
                 }
-                output_power.store(watcher.power_manager.is_some(), Ordering::Relaxed);
             }
             ready = async_fd.readable() => {
                 let mut ready = match ready {
