@@ -85,8 +85,9 @@ A pending `SleepRetry` from before the cycle is cancelled on the way into
 The daemon restarted in the middle of the cycle (`state.json` says
 `LongSleep`, no AC at startup) starts in `Checking` with the window running.
 
-A config reload past `Grace` keeps the idle stages off; the mode's stages
-come back with the exit from the cycle.
+A config reload or a mode switch (by the battery level, or `amperedctl
+mode`) past `Grace` keeps the idle stages off; the mode's stages come back
+with the exit from the cycle.
 
 ## Why `awake_window`
 

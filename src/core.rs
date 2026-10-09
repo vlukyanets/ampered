@@ -341,20 +341,7 @@ impl Engine {
         if let ModeSelection::Auto(_) = self.mode {
             self.mode = ModeSelection::Auto(self.auto_mode_name());
         }
-        let mut commands = self.mode_commands();
-        // Past Grace the stages are off for the cycle; a reload must not
-        // switch them back on (`docs/10-long-sleep-rtc.md`).
-        if matches!(
-            self.state,
-            State::LongSleep(Phase::Armed | Phase::Sleeping | Phase::Checking)
-        ) {
-            for command in &mut commands {
-                if let Command::ReplaceIdleStages(stages) = command {
-                    *stages = Stages::NONE;
-                }
-            }
-        }
-        commands
+        self.mode_commands()
     }
 
     /// Put the current mode into effect. A config with no `[modes]` at all has
@@ -366,7 +353,17 @@ impl Engine {
         if !name.is_empty() {
             commands.push(Command::ApplyMode(name));
         }
-        commands.push(Command::ReplaceIdleStages(self.stages()));
+        // Past Grace the stages are off for the cycle; a reload or a mode
+        // switch must not bring them back (`docs/10-long-sleep-rtc.md`).
+        let stages = if matches!(
+            self.state,
+            State::LongSleep(Phase::Armed | Phase::Sleeping | Phase::Checking)
+        ) {
+            Stages::NONE
+        } else {
+            self.stages()
+        };
+        commands.push(Command::ReplaceIdleStages(stages));
         commands
     }
 
@@ -2429,6 +2426,22 @@ mod tests {
             "{commands:?}"
         );
         assert_eq!(engine.state(), State::Active);
+    }
+
+    /// Past Grace the stages stay off; a mode switch by the battery level
+    /// must not bring them back (`docs/10-long-sleep-rtc.md`).
+    #[test]
+    fn mode_change_in_the_cycle_keeps_the_stages_off() {
+        let mut engine = server_in(Phase::Armed);
+        let commands = engine.handle(Event::Battery(15));
+        assert!(
+            commands.contains(&Command::ApplyMode("low".into())),
+            "{commands:?}"
+        );
+        assert!(
+            commands.contains(&Command::ReplaceIdleStages(Stages::NONE)),
+            "{commands:?}"
+        );
     }
 
     /// Stopping the daemon mid-cycle must not leave the RTC alarm armed:
