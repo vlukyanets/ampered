@@ -4,7 +4,8 @@
 
 A Unix stream socket at `[general] socket` (default
 `/run/ampered/ampered.sock`), permissions `0660 root:<socket_group>`.
-Protocol — **NDJSON**: request line → response line, connection closes.
+Protocol — **NDJSON**: request line → response line; a client may send
+several requests on one connection.
 Exception — `subscribe`: a stream of events until the client disconnects.
 
 At startup an existing socket file is replaced only when nothing answers on

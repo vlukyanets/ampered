@@ -45,7 +45,7 @@ compositor — both would dim.
 ## Install
 
 ```sh
-cargo install --path .
+cargo install --path . --root /usr/local   # the units run /usr/local/bin
 sudo install -Dm644 examples/ampered.toml /etc/ampered/ampered.toml
 sudo install -Dm644 contrib/ampered.service /etc/systemd/system/ampered.service
 sudo systemctl enable --now ampered

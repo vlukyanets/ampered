@@ -1,13 +1,16 @@
 # 15 — Testing
 
-> **Status:** the `config`, `core`, `backlight`, `power::supply`,
-> `sleep::rtc` and `sleep::planner` suites are in the tree. They touch
-> nothing outside the process: no real sysfs, no sockets, no D-Bus — the
-> backlight and power supply tests run against a tempdir laid out like
-> sysfs, the RTC tests against an in-memory `wakealarm`, the FSM tests
-> compare `Command` values, and the one subprocess is a `resume_hook` test
-> running `echo`. The `display`, `ipc` and `timers` suites are not written
-> yet. What follows describes the full intended suite.
+> **Status:** suites exist for `config`, `core`, `backlight`, `display`,
+> `power::supply`, `sleep::rtc`, `sleep::planner`, `timers`, `ipc`,
+> `agent`, `logind` (the `IdleHint` fallback only), `logind_conf` and
+> `notify`. Not covered: `idle`, `power::modes`, the logind executor and
+> listener, `main.rs`, and the `amperedctl` and `ampered-agent` binaries.
+> The suites touch nothing outside the process except: the `ipc` tests use
+> a real socket in a tempdir, the one subprocess is a `resume_hook` test
+> running `echo`, and
+> `reconfigure_keeps_the_dim_unless_the_device_changes` looks a device up
+> under the real `/sys/class/backlight` (read-only). What follows
+> describes the full intended suite.
 
 ## Levels
 
@@ -16,7 +19,7 @@
 | Unit | config parsing/validation, brightness conversion, `classify_wake`, hysteresis | plain `#[test]` | always |
 | FSM | the transition table from `02-state-machine.md` and `10-long-sleep-rtc.md` | a `transitions()` table of `(State, Event, State, Vec<Command>)` rows + scenario tests | always |
 | Module tests with fakes | `backlight` with an in-memory `FakeBacklightSink` (device selection on a tempdir with `brightness`/`max_brightness`), `supply` on a tempdir copy of `/sys/class/power_supply` | `tempfile` | always |
-| Integration | real Wayland, D-Bus | `--features integration`, `#[ignore]` without the feature | manual / on a dev machine |
+| Integration | real Wayland, D-Bus | no automated suite: the manual checks below | on a dev machine |
 
 ## FSM: required scenarios
 

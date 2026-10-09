@@ -1,17 +1,19 @@
 # 13 — Full config example
 
-At implementation time, move this into `examples/ampered.toml` and cover
-it with an `include_str!` → parse → validate test.
+`examples/ampered.toml` is this block, byte for byte; a test in
+`src/config.rs` checks that and that it parses and validates.
 
 ```toml
 [general]
 log_level = "info"
 socket = "/run/ampered/ampered.sock"
 socket_group = "users"
+privilege = "root"
 
 [wayland]
 runtime_dir = "/run/user/1000"
 display = "wayland-1"
+reconnect_max_backoff = "60s"
 
 [idle]
 fallback = "none"

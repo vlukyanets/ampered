@@ -41,8 +41,8 @@ it is a piece of debt — see ADR-6 — that split mode pays off.
   the agent connects like any client, sends `{"cmd":"agent"}` and the
   connection turns into a two-way stream — idle events up, stages and
   screen requests down (`11-ipc-cli.md`, "The agent stream"). The daemon
-  pushes the `[display]` section to the agent on registration and on every
-  reload, so the agent needs no config file of its own.
+  pushes the `[display]` section to the agent on registration and on a
+  reload that changes it, so the agent needs no config file of its own.
 - Authorization is the socket's: membership in `[general] socket_group`,
   the same right that lets a user run `amperedctl sleep`. One agent at a
   time; a new registration replaces the old stream (a compositor restart

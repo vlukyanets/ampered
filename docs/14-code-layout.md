@@ -44,15 +44,26 @@ binaries want whole (ADR-16).
 ## Traits for testability
 
 ```rust
-trait BacklightSink { fn read(&self) -> Result<u32>; fn write(&self, v: u32) -> Result<()>; fn max(&self) -> u32; }
-trait PowerSource   { fn snapshot(&self) -> Result<PowerSnapshot>; }
-trait SleepBackend  { async fn suspend(&self, m: SleepMethod) -> Result<()>; async fn inhibitors(&self) -> Result<Vec<Inhibitor>>; }
-trait RtcAlarm      { fn set(&self, at: SystemTime) -> Result<()>; fn clear(&self) -> Result<()>; fn pending(&self) -> Result<Option<SystemTime>>; }
-trait ModeSink      { fn write(&self, path: &Path, v: &str) -> Result<()>; }
+trait BacklightSink { fn read(&self) -> io::Result<u32>; fn write(&self, v: u32) -> io::Result<()>; fn max(&self) -> u32; fn name(&self) -> &str; }
+trait PowerSource   { fn snapshot(&self) -> io::Result<PowerSnapshot>; }
+trait RtcAlarm      { fn set(&self, at: SystemTime) -> io::Result<()>; fn clear(&self) -> io::Result<()>; fn pending(&self) -> io::Result<Option<SystemTime>>; }
+trait ModeSink      { fn write(&self, path: &Path, v: &str) -> io::Result<()>; fn read(&self, path: &Path) -> io::Result<String>; fn cpufreq(&self, leaf: &str) -> Vec<PathBuf>; }
 ```
 
-Each one has a `Fake*` under `#[cfg(test)]` (or `tests/common/`). `Engine`
-depends on none of them — only `main.rs` wires commands to their executors.
+What the tests use instead of the system:
+
+- `BacklightSink` — `FakeBacklightSink` (test-only), and a tempdir laid out
+  like `/sys/class/backlight` for device selection.
+- `PowerSource` — `FakePowerSource` (public: it also backs `--fake-power`),
+  and `SysfsPowerSource::with_root` on a tempdir.
+- `RtcAlarm` — `Wakealarm` over the private `AlarmFile`, faked by
+  `FakeAlarmFile`.
+- `ModeSink` — no fake: `SysfsModeSink::with_root` on a tempdir.
+
+logind and Wayland have no trait (D-Bus and the Wayland client are not
+worth abstracting for the few decisions they make); their pure helpers are
+tested directly. `Engine` depends on none of this — only `main.rs` wires
+commands to their executors.
 
 ## Dependencies
 
@@ -75,5 +86,7 @@ depends on none of them — only `main.rs` wires commands to their executors.
 
 - `cargo fmt`, `cargo clippy -D warnings` — in CI.
 - One module per file while it stays under ~600 lines; a directory beyond that.
+  `core.rs` is the known exception (and `config`, `backlight`, `ipc`, `main`
+  are a little past the line); splitting them is in `18-roadmap.md`.
 - Only what `main.rs`/tests/`amperedctl` need is public.
 - A `//!` doc comment at the top of each module linking to the relevant `docs/NN-*.md`.
