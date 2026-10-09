@@ -183,12 +183,14 @@ async fn session(
         return false;
     }
 
+    // Before any IdleBackendChanged: the agent reports the display's
+    // availability when it sees that event, reading this flag.
+    output_power.store(watcher.power_manager.is_some(), Ordering::Relaxed);
     if watcher.notifier.is_none() {
         // The global may still show up later; keep the connection and wait.
         warn!("no ext_idle_notifier_v1; idle is unavailable on this compositor");
         let _ = events.send(Event::IdleBackendChanged(false)).await;
     }
-    output_power.store(watcher.power_manager.is_some(), Ordering::Relaxed);
 
     let async_fd =
         match AsyncFd::with_interest(FdOf(connection.as_fd().as_raw_fd()), Interest::READABLE) {
