@@ -44,7 +44,7 @@ While in `LongSleep`, idle stages are not created
 | Grace | Timer(Grace) | | Armed | ReplaceIdleStages(None), ScheduleWake |
 | Armed | WakeScheduled(true) | ac | Active | RunHook, ApplyMode, ReplaceIdleStages |
 | Armed | WakeScheduled(true) | no inhibitors | Armed | Suspend |
-| Armed | WakeScheduled(false) / SleepBlocked / Activity | the alarm or the suspend didn't happen | Armed | sleep_failures += 1; < 3 → StartTimer(AwakeWindow), ≥ 3 → Active |
+| Armed | WakeScheduled(false) / SleepBlocked / SleepFailed / Activity | the alarm or the suspend didn't happen | Armed | sleep_failures += 1; < 3 → StartTimer(AwakeWindow), ≥ 3 → Active |
 | Armed | Suspending | | Sleeping | |
 | Armed | Timer(AwakeWindow) | ac | Active | RunHook, ApplyMode, ReplaceIdleStages |
 | Armed | Timer(AwakeWindow) | retry | Armed | ScheduleWake |
@@ -52,6 +52,7 @@ While in `LongSleep`, idle stages are not created
 | Sleeping | Resumed | battery ≤ critical | Checking | Broadcast(critical), Suspend{Hibernate, force} or PowerOff, StartTimer(AwakeWindow) |
 | Sleeping | Resumed | otherwise | Checking | StartTimer(AwakeWindow) |
 | Checking | Activity | classify = User, lid, input | Active | CancelTimer(AwakeWindow), Broadcast(interrupted) |
+| Checking | SleepFailed | the critical hibernate was refused | Checking | — (the window is already running) |
 | Checking | AcChanged(true) | | Active | CancelTimer(AwakeWindow), RunHook, ApplyMode, ReplaceIdleStages |
 | Checking | Timer(AwakeWindow) | ac | Active | RunHook, ApplyMode, ReplaceIdleStages |
 | Checking | Timer(AwakeWindow) | battery ≤ critical | Checking | Broadcast(critical), the critical action, StartTimer(AwakeWindow) |
@@ -69,7 +70,8 @@ for the same reason a regular `Resumed` does.
 The critical action leaves the FSM in `Checking` with the window running:
 if the hibernate does not happen (refused, unavailable), the next window
 re-evaluates the battery and tries again, instead of sitting in a dead
-state at 10%.
+state at 10%. A refusal arrives as `SleepFailed`, not `Activity`, so it is
+never mistaken for the user opening the lid (ADR-17).
 
 A pending `SleepRetry` from before the cycle is cancelled on the way into
 `Grace`: it would otherwise fire inside the cycle and send a plain

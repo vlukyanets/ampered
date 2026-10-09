@@ -123,3 +123,14 @@ member of the group can register as the agent and feed idle events — the
 same trust the group already has through `amperedctl sleep`; a per-session
 check against logind's active session can be added later without changing
 the protocol. Supersedes the D-Bus sketch in `03-privileges.md`.
+
+## ADR-17 — A refused sleep is its own event, not `Activity`
+**2026-10.** When logind refuses `Suspend`/`Hibernate` (or there is no
+logind to ask), the daemon feeds `Event::SleepFailed` instead of
+`Event::Activity`. Reason: `Activity` in `LongSleep(Checking)` means the
+user woke the machine (ADR-13) and ends the cycle, so a refused critical
+hibernate looked like an opened lid and left the machine running on a
+critical battery, where `docs/10-long-sleep-rtc.md` wants it to stay in
+`Checking` and retry when the window closes. Consequences: one more event;
+outside `Checking` it behaves as `Activity` did — `Suspending` backs out
+to `Active`, `Armed` counts a failed attempt.
