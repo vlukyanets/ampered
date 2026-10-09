@@ -166,13 +166,7 @@ async fn run(cli: Cli, config: Config, notifier: Notifier) -> Result<()> {
     }));
 
     let saved: SharedState = Arc::new(std::sync::Mutex::new(SavedState::default()));
-    let logind = logind::connect(
-        config.clone(),
-        events_tx.clone(),
-        saved.clone(),
-        fallback.clone(),
-    )
-    .await;
+    let logind = logind::connect(events_tx.clone(), saved.clone(), fallback.clone()).await;
     if config.idle.fallback == IdleFallbackConfig::Logind && logind.is_none() {
         warn!("[idle] fallback = \"logind\" needs logind, which is unavailable");
     }
@@ -372,7 +366,9 @@ impl Daemon {
             }
             Command::Suspend { method, force } => {
                 let delivered = match &self.logind {
-                    Some(logind) => logind.suspend(method, force),
+                    Some(logind) => {
+                        logind.suspend(method, force, self.config.sleep.respect_inhibitors)
+                    }
                     None => {
                         warn!("no logind, cannot sleep");
                         false

@@ -14,7 +14,7 @@ use tracing::{debug, error, info, warn};
 use zbus::export::futures_core::Stream;
 use zbus::zvariant::OwnedFd;
 
-use crate::config::{Config, SleepMethod};
+use crate::config::SleepMethod;
 use crate::core::{Event, Inhibitor, Stage};
 
 /// logind has no "inhibitors changed" signal, so the cache is refreshed on a
@@ -137,7 +137,12 @@ pub type SharedState = Arc<Mutex<SavedState>>;
 
 #[derive(Debug)]
 enum Request {
-    Sleep { method: SleepMethod, force: bool },
+    Sleep {
+        method: SleepMethod,
+        force: bool,
+        /// Read from the current config on every request, so a reload counts.
+        respect_inhibitors: bool,
+    },
     PowerOff,
 }
 
@@ -151,9 +156,14 @@ impl LogindHandle {
     /// `false` means the request never reached the bus — the caller has to
     /// undo the FSM's move into `Suspending`, or it would wait there forever.
     #[must_use]
-    pub fn suspend(&self, method: SleepMethod, force: bool) -> bool {
+    pub fn suspend(&self, method: SleepMethod, force: bool, respect_inhibitors: bool) -> bool {
         let method = self.usable(method);
-        match self.requests.try_send(Request::Sleep { method, force }) {
+        let request = Request::Sleep {
+            method,
+            force,
+            respect_inhibitors,
+        };
+        match self.requests.try_send(request) {
             Ok(()) => true,
             Err(err) => {
                 warn!(%err, "logind actor is busy, suspend request dropped");
@@ -185,7 +195,6 @@ impl LogindHandle {
 /// executor of sleep requests. `None` means no D-Bus — the daemon runs on
 /// without the ability to sleep.
 pub async fn connect(
-    config: Arc<Config>,
     events: mpsc::Sender<Event>,
     saved: SharedState,
     fallback: SharedFallback,
@@ -219,7 +228,7 @@ pub async fn connect(
     ));
     tokio::spawn(inhibitor_poll(manager.clone(), events.clone()));
     tokio::spawn(idle_hint_poll(manager.clone(), events.clone(), fallback));
-    tokio::spawn(executor(manager, config, events, requests_rx));
+    tokio::spawn(executor(manager, events, requests_rx));
 
     info!("connected to logind");
     Some(LogindHandle {
@@ -430,16 +439,19 @@ fn fallback_event(
 
 async fn executor(
     manager: ManagerProxy<'static>,
-    config: Arc<Config>,
     events: mpsc::Sender<Event>,
     mut requests: mpsc::Receiver<Request>,
 ) {
     while let Some(request) = requests.recv().await {
         match request {
-            Request::Sleep { method, force } => {
+            Request::Sleep {
+                method,
+                force,
+                respect_inhibitors,
+            } => {
                 // The cached list the engine used can be seconds old; check
                 // again now that we are about to act (ADR-11).
-                if !force && config.sleep.respect_inhibitors {
+                if !force && respect_inhibitors {
                     let blockers = blocking_inhibitors(&manager).await;
                     if !blockers.is_empty() {
                         info!(?blockers, "suspend refused by inhibitors");
