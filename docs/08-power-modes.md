@@ -62,8 +62,10 @@ while AC is online, `on_battery` while on battery and not low, and
 | `tuned` | same as above | don't combine |
 | `swayidle` / `hypridle` | both react to idle | remove them — otherwise dim happens twice |
 
-At startup: check `systemctl is-active` for these units → `warn!` and an
-entry in `status.degraded`. The `ampered.service` unit declares
+At startup: check `systemctl is-active` for the three daemons, and
+`/proc/*/comm` for `swayidle` and `hypridle` (session processes, not
+system units) → `warn!` and an entry in `status.degraded`
+(`conflict:<name>`). The `ampered.service` unit declares
 `Conflicts=power-profiles-daemon.service tlp.service`.
 
 ## Custom modes

@@ -196,5 +196,60 @@ pub async fn detect_conflicts() -> Vec<String> {
             found.push(format!("conflict:{short}"));
         }
     }
+    for name in running_processes(Path::new("/proc"), &CONFLICTING_PROCESSES) {
+        warn!(
+            process = name,
+            "an idle daemon is running; it will dim and sleep alongside ampered"
+        );
+        found.push(format!("conflict:{name}"));
+    }
     found
+}
+
+/// Session idle daemons; they are processes, not system units.
+pub const CONFLICTING_PROCESSES: [&str; 2] = ["swayidle", "hypridle"];
+
+/// The `names` running right now, from `<proc_root>/<pid>/comm`.
+fn running_processes(proc_root: &Path, names: &[&str]) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(proc_root) else {
+        return Vec::new();
+    };
+    let mut found: Vec<String> = entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .bytes()
+                .all(|b| b.is_ascii_digit())
+        })
+        .filter_map(|entry| fs::read_to_string(entry.path().join("comm")).ok())
+        .map(|comm| comm.trim_end().to_string())
+        .filter(|comm| names.contains(&comm.as_str()))
+        .collect();
+    found.sort();
+    found.dedup();
+    found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_idle_daemons_in_proc() {
+        let dir = tempfile::tempdir().unwrap();
+        for (pid, comm) in [("1", "systemd\n"), ("42", "swayidle\n")] {
+            fs::create_dir(dir.path().join(pid)).unwrap();
+            fs::write(dir.path().join(pid).join("comm"), comm).unwrap();
+        }
+        // Not a pid: skipped even though it looks like one inside.
+        fs::create_dir(dir.path().join("self")).unwrap();
+        fs::write(dir.path().join("self").join("comm"), "hypridle\n").unwrap();
+
+        assert_eq!(
+            running_processes(dir.path(), &CONFLICTING_PROCESSES),
+            vec!["swayidle".to_string()]
+        );
+    }
 }
