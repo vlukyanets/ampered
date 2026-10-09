@@ -225,7 +225,8 @@ impl Controller {
                 return;
             }
         };
-        let target = self.target_for(sink.as_ref(), percent);
+        // Dimming never brightens a panel the user already turned down.
+        let target = self.target_for(sink.as_ref(), percent).min(current);
         debug!(from = current, to = target, "dim");
 
         self.pre_dim = Some(current);
@@ -492,6 +493,18 @@ mod tests {
         assert_eq!(sink.value(), 50);
         controller.restore().await;
         assert_eq!(sink.value(), 800);
+    }
+
+    /// A panel the user turned down below `dim_percent` is not faded up.
+    #[tokio::test]
+    async fn dim_never_brightens() {
+        let sink = FakeBacklightSink::new(50, 1000);
+        let mut controller = controller(&sink);
+
+        controller.dim_to(10).await;
+        assert_eq!(sink.value(), 50);
+        controller.restore().await;
+        assert_eq!(sink.value(), 50);
     }
 
     #[tokio::test]
