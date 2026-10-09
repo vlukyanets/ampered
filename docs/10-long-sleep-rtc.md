@@ -38,8 +38,8 @@ While in `LongSleep`, idle stages are not created
 
 | State | Event | Condition | New | Commands |
 |---|---|---|---|---|
-| Active* | AcChanged(false) | server.enabled, trigger=ac_lost | Grace | StartTimer(Grace) |
-| Any | Ipc(LongSleep) | server.enabled | Grace | StartTimer(Grace, 0) |
+| Active* | AcChanged(false) | server.enabled, trigger=ac_lost | Grace | CancelTimer(SleepRetry) if pending, StartTimer(Grace) |
+| Any | Ipc(LongSleep) | server.enabled | Grace | CancelTimer(SleepRetry) if pending, StartTimer(Grace, 0) |
 | Grace | AcChanged(true) | | Active | CancelTimer(Grace) |
 | Grace | Timer(Grace) | | Armed | ReplaceIdleStages(None), ScheduleWake |
 | Armed | WakeScheduled(true) | ac | Active | RunHook, ApplyMode, ReplaceIdleStages |
@@ -70,6 +70,10 @@ The critical action leaves the FSM in `Checking` with the window running:
 if the hibernate does not happen (refused, unavailable), the next window
 re-evaluates the battery and tries again, instead of sitting in a dead
 state at 10%.
+
+A pending `SleepRetry` from before the cycle is cancelled on the way into
+`Grace`: it would otherwise fire inside the cycle and send a plain
+`Suspend` with no alarm armed.
 
 The daemon restarted in the middle of the cycle (`state.json` says
 `LongSleep`, no AC at startup) starts in `Checking` with the window running.

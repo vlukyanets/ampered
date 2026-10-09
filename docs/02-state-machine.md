@@ -86,7 +86,7 @@ enum Command {
 | Suspending | Activity | logind refused / race | Active | Undim, Screen(true) |
 | Sleeping | Resumed | — | Active | Undim, Screen(true), ReplaceIdleStages |
 | * | AcChanged(x) | auto mode | — | ApplyMode, ReplaceIdleStages |
-| Active/Dimmed/ScreenOff | AcChanged(false) | server.enabled, trigger=ac_lost | LongSleep(Grace) | StartTimer(Grace) |
+| Active/Dimmed/ScreenOff | AcChanged(false) | server.enabled, trigger=ac_lost | LongSleep(Grace) | CancelTimer(SleepRetry) if pending, StartTimer(Grace) |
 | LongSleep(Grace) | AcChanged(true) | — | Active | CancelTimer(Grace) |
 | LongSleep(Grace) | Timer(Grace) | — | LongSleep(Armed) | ReplaceIdleStages(None), ScheduleWake |
 | LongSleep(Armed) | WakeScheduled(true) | — | LongSleep(Armed) | Suspend |
