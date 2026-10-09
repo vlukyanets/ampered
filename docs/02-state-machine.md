@@ -42,6 +42,7 @@ enum Event {
     HibernateAvailable(bool),     // logind's and the kernel's verdict at startup
     Inhibitors(Vec<Inhibitor>),   // refreshed logind view (ADR-11)
     SleepBlocked(Vec<Inhibitor>), // a suspend attempt was refused (ADR-11)
+    SleepFailed,                  // logind refused Suspend/Hibernate, or there is no logind (ADR-17)
     WakeScheduled(bool),          // the RTC alarm for ScheduleWake is armed, or not (ADR-13)
     ReloadRequested,
     ShutdownRequested,
@@ -83,7 +84,8 @@ enum Command {
 | Suspending | SleepBlocked | — | the state Suspend was sent from | StartTimer(SleepRetry) |
 | ScreenOff | Activity | — | Active | Undim, Screen(true) |
 | Suspending | Suspending | — | Sleeping | — |
-| Suspending | Activity | logind refused / race | Active | Undim, Screen(true) |
+| Suspending | Activity | race | Active | Undim, Screen(true) |
+| Suspending | SleepFailed | logind refused | Active | Undim, Screen(true) |
 | Sleeping | Resumed | — | Active | Undim, Screen(true), ReplaceIdleStages |
 | * | AcChanged(x) | auto mode | — | ApplyMode, ReplaceIdleStages |
 | Active/Dimmed/ScreenOff | AcChanged(false) | server.enabled, trigger=ac_lost | LongSleep(Grace) | CancelTimer(SleepRetry) if pending, StartTimer(Grace) |

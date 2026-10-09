@@ -461,7 +461,7 @@ async fn executor(
                 if let Err(err) = result {
                     error!(%err, %method, "logind refused to sleep");
                     // Nothing is going to happen, so let the FSM back out.
-                    let _ = events.send(Event::Activity).await;
+                    let _ = events.send(Event::SleepFailed).await;
                 }
             }
             Request::PowerOff => {

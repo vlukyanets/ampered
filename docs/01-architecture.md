@@ -20,7 +20,7 @@ planner. See the component table below for exactly what each side does.
 | `display` | DPMS via `wlr-output-power-management` or a command | `Command` | Wayland / `sh -c` |
 | `power::supply` | AC and charge from `/sys/class/power_supply` | sysfs, udev | `Event::AcChanged`, `Event::Battery` |
 | `power::modes` | Applying a mode | `Command::ApplyMode` | sysfs |
-| `logind` | `Suspend`, `Hibernate`, `PrepareForSleep`, `ListInhibitors`, delay lock | D-Bus | `Event::Suspending`, `Event::Resumed` |
+| `logind` | `Suspend`, `Hibernate`, `PrepareForSleep`, `ListInhibitors`, delay lock | D-Bus | `Event::Suspending`, `Event::Resumed`, `Event::SleepBlocked`, `Event::SleepFailed` |
 | `sleep::rtc` | RTC alarm (`wakealarm` / `rtcwake`) | `Command::ScheduleWake` | RTC |
 | `sleep::planner` | Wake classification, `resume_hook` | `Command::ScheduleWake`, `Event::Resumed` | `Event::Activity` for a wake by the user, `sh -c` |
 | `ipc` | NDJSON server over a Unix socket; `amperedctl` — a separate binary | socket | `Event::Ipc(req)` |

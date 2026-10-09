@@ -206,6 +206,8 @@ pub enum Event {
     Inhibitors(Vec<Inhibitor>),
     /// A suspend attempt was refused because of inhibitors (ADR-11).
     SleepBlocked(Vec<Inhibitor>),
+    /// logind refused `Suspend`/`Hibernate`, or there is no logind (ADR-17).
+    SleepFailed,
     /// The RTC alarm asked for by `ScheduleWake` is armed — or could not be (ADR-13).
     WakeScheduled(bool),
     ReloadRequested,
@@ -435,6 +437,7 @@ impl Engine {
                 Vec::new()
             }
             Event::SleepBlocked(list) => self.on_sleep_blocked(list),
+            Event::SleepFailed => self.on_sleep_failed(),
             Event::WakeScheduled(armed) => self.on_wake_scheduled(armed),
             Event::ReloadRequested => vec![Command::Reload { reply_to: None }],
             Event::ShutdownRequested => {
@@ -565,6 +568,16 @@ impl Engine {
                 self.arm_sleep_retry()
             }
             State::LongSleep(Phase::Armed) => self.cycle_failure(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Unlike `Activity`, never read as the user waking the machine (ADR-17).
+    fn on_sleep_failed(&mut self) -> Vec<Command> {
+        match self.state {
+            State::Suspending => self.on_activity(),
+            State::LongSleep(Phase::Armed) => self.cycle_failure(),
+            // A refused critical hibernate: the running window tries again.
             _ => Vec::new(),
         }
     }
@@ -1301,6 +1314,14 @@ mod tests {
                 vec![Undim, Screen(true)],
             ),
             (Sleeping, Event::Activity, Sleeping, vec![]),
+            // logind refused the suspend (ADR-17).
+            (
+                Suspending,
+                Event::SleepFailed,
+                Active,
+                vec![Undim, Screen(true)],
+            ),
+            (ScreenOff, Event::SleepFailed, ScreenOff, vec![]),
             // Idempotency: no second Dim, no stage while the machine is going down.
             (Dimmed, Event::Idle(Stage::Dim), Dimmed, vec![]),
             (ScreenOff, Event::Idle(Stage::Dim), ScreenOff, vec![]),
@@ -2286,6 +2307,37 @@ mod tests {
             effects(engine.handle(Event::Timer(TimerId::AwakeWindow))),
             vec![Command::ScheduleWake(CHECK_INTERVAL)]
         );
+    }
+
+    /// ADR-17: a refused critical hibernate is not the user opening the lid;
+    /// the cycle stays in `Checking` and the running window tries again.
+    #[test]
+    fn refused_critical_hibernate_keeps_checking() {
+        let mut engine = server_in(Phase::Sleeping);
+        engine.handle(Event::Battery(9));
+        engine.handle(Event::Resumed);
+
+        assert_eq!(engine.handle(Event::SleepFailed), vec![]);
+        assert_eq!(engine.state(), State::LongSleep(Phase::Checking));
+        assert_eq!(
+            engine.handle(Event::Timer(TimerId::AwakeWindow)),
+            vec![
+                phase("critical"),
+                HIBERNATE,
+                Command::StartTimer(TimerId::AwakeWindow, AWAKE_WINDOW),
+            ]
+        );
+    }
+
+    #[test]
+    fn refused_suspend_in_armed_is_a_failed_attempt() {
+        let mut engine = server_in(Phase::Armed);
+        engine.handle(Event::WakeScheduled(true));
+        assert_eq!(
+            engine.handle(Event::SleepFailed),
+            vec![Command::StartTimer(TimerId::AwakeWindow, AWAKE_WINDOW)]
+        );
+        assert_eq!(engine.state(), State::LongSleep(Phase::Armed));
     }
 
     /// A retry armed before the cycle must not fire inside it: that would be

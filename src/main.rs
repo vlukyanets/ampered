@@ -366,7 +366,7 @@ impl Daemon {
                 if !delivered {
                     // Nothing is going to happen, so do not leave the FSM
                     // sitting in Suspending until the user touches the machine.
-                    return Outcome::Continue(engine.handle(Event::Activity));
+                    return Outcome::Continue(engine.handle(Event::SleepFailed));
                 }
             }
             // The engine sleeps only once it hears the alarm is armed (ADR-13).
