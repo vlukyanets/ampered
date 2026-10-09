@@ -58,6 +58,7 @@ cargo run --bin amperedctl -- --socket /tmp/a.sock watch
 
 # 2. A fake power source to check auto-switching
 cargo run -- --socket /tmp/a.sock --fake-power bat:15
+#    (the spec is ac | ac:NN | bat | bat:NN, NN in 0..=100; bare bat is 50%)
 
 # 3. Long sleep on a short interval (careful: this will really put the machine to sleep)
 #    check_interval = "2m", awake_window = "20s"; keep `watch` running in another terminal

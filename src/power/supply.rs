@@ -134,17 +134,22 @@ impl FakePowerSource {
         }
     }
 
-    /// Parses the `--fake-power ac | bat:NN` argument from `docs/15-testing.md`.
+    /// Parses the `--fake-power ac | ac:NN | bat | bat:NN` argument from
+    /// `docs/15-testing.md`.
     pub fn parse(spec: &str) -> Result<FakePowerSource, String> {
+        let percent = |text: &str, what: &str| match text.parse::<u8>() {
+            Ok(value) if value <= 100 => Ok(value),
+            _ => Err(format!("expected {what}:NN with NN in 0..=100")),
+        };
         let snapshot = match spec.split_once(':') {
-            Some(("bat", percent)) => PowerSnapshot {
+            Some(("bat", value)) => PowerSnapshot {
                 ac: false,
-                battery: Some(percent.parse().map_err(|_| "expected bat:NN")?),
+                battery: Some(percent(value, "bat")?),
                 batteries: vec!["BAT0".into()],
             },
-            Some(("ac", percent)) => PowerSnapshot {
+            Some(("ac", value)) => PowerSnapshot {
                 ac: true,
-                battery: Some(percent.parse().map_err(|_| "expected ac:NN")?),
+                battery: Some(percent(value, "ac")?),
                 batteries: vec!["BAT0".into()],
             },
             None if spec == "ac" => PowerSnapshot::on_ac(),
@@ -153,7 +158,11 @@ impl FakePowerSource {
                 battery: Some(50),
                 batteries: vec!["BAT0".into()],
             },
-            _ => return Err(format!("cannot parse {spec:?}, expected ac, bat or bat:NN")),
+            _ => {
+                return Err(format!(
+                    "cannot parse {spec:?}, expected ac, ac:NN, bat or bat:NN"
+                ));
+            }
         };
         Ok(FakePowerSource::new(snapshot))
     }
@@ -540,6 +549,8 @@ mod tests {
 
         assert!(FakePowerSource::parse("bat:full").is_err());
         assert!(FakePowerSource::parse("solar").is_err());
+        assert!(FakePowerSource::parse("bat:150").is_err());
+        assert!(FakePowerSource::parse("ac:101").is_err());
 
         let fake = FakePowerSource::parse("ac").unwrap();
         fake.set(bat15.clone());
