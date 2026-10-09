@@ -45,7 +45,7 @@ While in `LongSleep`, idle stages are not created
 | Armed | WakeScheduled(true) | ac | Active | RunHook, ApplyMode, ReplaceIdleStages |
 | Armed | WakeScheduled(true) | no inhibitors | Armed | Suspend |
 | Armed | WakeScheduled(false) / SleepBlocked / SleepFailed / Activity | the alarm or the suspend didn't happen | Armed | sleep_failures += 1; < 3 → StartTimer(AwakeWindow), ≥ 3 → Active |
-| Armed | Suspending | | Sleeping | |
+| Armed | Suspending | | Sleeping | sleep_failures = 0 |
 | Armed | Timer(AwakeWindow) | ac | Active | RunHook, ApplyMode, ReplaceIdleStages |
 | Armed | Timer(AwakeWindow) | retry | Armed | ScheduleWake |
 | Sleeping | Resumed | ac | Active | RunHook, ApplyMode, ReplaceIdleStages |
@@ -169,7 +169,7 @@ timeout, stdout/stderr go to the log. Typically:
 | AC lost and back within 10s | `grace_period` hasn't expired — nothing happens |
 | AC returned during sleep | Wakes on the alarm, sees AC, exits. Delay ≤ `check_interval` |
 | Battery drained faster than expected | The next alarm sees `critical` — or the machine has already shut down. Hence a conservative `check_interval` |
-| `Suspend` refused by an inhibitor in the cycle | `sleep_failures++`, wait for `awake_window`, retry; after 3 attempts → `Active` |
+| `Suspend` refused by an inhibitor in the cycle | `sleep_failures++`, wait for `awake_window`, retry; after 3 attempts in a row → `Active` |
 | Lid opened during `Checking` | Input → compositor `resumed` → `Activity` → treated as `User` in `Checking` → `Active` |
 | Daemon restarted during `LongSleep` | `state.json` holds `phase`; if started with no AC, resume from `Checking` |
 | `rtc_device` isn't `rtc0` (USB RTC, ARM) | Configure `rtc_device`; check `/sys/class/rtc/<dev>/device/power/wakeup == enabled` |

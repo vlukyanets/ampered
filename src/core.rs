@@ -260,7 +260,7 @@ pub struct Engine {
     idle_connected: bool,
     /// Until told otherwise, assume the critical action can hibernate.
     hibernate_available: bool,
-    /// Attempts of the server cycle that did not end in a suspend.
+    /// Attempts of the server cycle in a row that did not end in a suspend.
     sleep_failures: u8,
     /// The last cycle ended because the user woke the machine; shown in
     /// status until the next cycle starts (`docs/10-long-sleep-rtc.md`).
@@ -588,7 +588,11 @@ impl Engine {
         // either way.
         self.pending_sleep = false;
         self.state = match self.state {
-            State::LongSleep(_) => State::LongSleep(Phase::Sleeping),
+            State::LongSleep(_) => {
+                // Failures count only in a row (`docs/10-long-sleep-rtc.md`).
+                self.sleep_failures = 0;
+                State::LongSleep(Phase::Sleeping)
+            }
             _ => State::Sleeping,
         };
         Vec::new()
@@ -2335,6 +2339,28 @@ mod tests {
         engine.handle(Event::WakeScheduled(true));
         assert_eq!(
             engine.handle(Event::SleepFailed),
+            vec![Command::StartTimer(TimerId::AwakeWindow, AWAKE_WINDOW)]
+        );
+        assert_eq!(engine.state(), State::LongSleep(Phase::Armed));
+    }
+
+    /// Failures count only in a row: a successful sleep starts over.
+    #[test]
+    fn successful_sleep_resets_failures() {
+        let mut engine = server_in(Phase::Armed);
+        engine.handle(Event::WakeScheduled(false));
+        engine.handle(Event::Timer(TimerId::AwakeWindow));
+        engine.handle(Event::WakeScheduled(false));
+
+        engine.handle(Event::Timer(TimerId::AwakeWindow));
+        engine.handle(Event::WakeScheduled(true));
+        engine.handle(Event::Suspending);
+        engine.handle(Event::Resumed);
+        engine.handle(Event::Timer(TimerId::AwakeWindow));
+        assert_eq!(engine.state(), State::LongSleep(Phase::Armed));
+
+        assert_eq!(
+            effects(engine.handle(Event::WakeScheduled(false))),
             vec![Command::StartTimer(TimerId::AwakeWindow, AWAKE_WINDOW)]
         );
         assert_eq!(engine.state(), State::LongSleep(Phase::Armed));
