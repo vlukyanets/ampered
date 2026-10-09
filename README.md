@@ -10,7 +10,7 @@ about idle but not about batteries.
 
 ## Status
 
-v0.2 is implemented: config, the state machine, IPC with `amperedctl`,
+v0.3 is implemented: config, the state machine, IPC with `amperedctl`,
 power source and modes with auto-switching (the manual choice survives a
 restart), backlight, Wayland idle with a logind `IdleHint` fallback, sleep
 through logind, the `wlr` and `command` DPMS backends, `Type=notify` with
