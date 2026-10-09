@@ -24,7 +24,7 @@ Besides the state, `Engine` also holds:
 - `mode: ModeSelection` — `Auto(name)` | `Manual(name)`
 - `power: PowerSnapshot` — `ac: bool`, `battery: Option<u8>`, `low: bool` (with hysteresis)
 - `inhibits: Vec<Inhibit>` — internal (from IPC) with a TTL
-- `sleep_failures: u8` — failure counter for the long-sleep cycle
+- `sleep_failures: u8` — attempts of the long-sleep cycle in a row that did not sleep
 
 ## Events
 

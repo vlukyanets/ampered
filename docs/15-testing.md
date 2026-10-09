@@ -27,7 +27,7 @@
 4. `AcChanged(false)` in auto → `ApplyMode(on_battery)`; in manual → no `ApplyMode`.
 5. Hysteresis: `Battery(20)` → low, `Battery(23)` → still low, `Battery(25)` → not low.
 6. The full server cycle: `Grace → Armed → Sleeping → Checking → Armed`, exits by AC, by User, by critical.
-7. `sleep_failures ≥ 3` → exit to `Active`.
+7. `sleep_failures ≥ 3` in a row → exit to `Active`; a successful sleep resets it.
 8. `ShutdownRequested` from `Dimmed`/`ScreenOff` → `Undim`, `Screen(true)`, `Shutdown`.
 9. `Reload` with an invalid config → state and mode don't change.
 10. Idle stages with `dim` disabled: `Idle(ScreenOff)` from `Active` → `ScreenOff`.
