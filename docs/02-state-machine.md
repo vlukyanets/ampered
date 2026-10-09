@@ -108,7 +108,8 @@ The full set of `LongSleep` transitions is in `10-long-sleep-rtc.md`.
 - `Suspend` is only sent from a state where the machine is still awake
   (`Active`, `Dimmed`, `ScreenOff`), from `LongSleep(Armed)` after
   `WakeScheduled(true)` — never without an armed alarm — or via
-  `Ipc(Sleep)` from any state. Normally it is `ScreenOff`; the earlier states
+  `Ipc(Sleep)` from any state outside `LongSleep` — the cycle owns sleeping
+  there, and a manual suspend would leave its alarm armed. Normally it is `ScreenOff`; the earlier states
   are reachable when the stages before `sleep` are disabled, or when a
   compositor restart delivers `idled` for `sleep` first
   (`04-idle-wayland.md`).

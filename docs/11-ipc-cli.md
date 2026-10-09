@@ -24,7 +24,7 @@ it leaves whatever is at the socket path alone, since it never bound it.
 {"cmd":"undim"}
 {"cmd":"screen","state":"off"}             // "on" | "off"
 {"cmd":"sleep"}                            // with inhibitor checks
-{"cmd":"sleep","force":true}
+{"cmd":"sleep","force":true}              // both refused inside the long-sleep cycle
 {"cmd":"long-sleep"}                       // enter the server cycle
 {"cmd":"long-sleep","cancel":true}
 {"cmd":"inhibit","what":"idle","why":"build running","ttl":"2h"}

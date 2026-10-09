@@ -958,6 +958,16 @@ impl Engine {
                 commands
             }
             Request::Sleep { force } => {
+                // The cycle owns sleeping; a manual suspend would leave its
+                // alarm armed and the cycle lost.
+                if let State::LongSleep(phase) = self.state {
+                    return vec![Command::Reply(
+                        id,
+                        Response::error(format!(
+                            "in the long-sleep cycle ({phase}); cancel it with `amperedctl long-sleep --cancel` first"
+                        )),
+                    )];
+                }
                 let blockers = self.sleep_blockers();
                 if !force && !blockers.is_empty() {
                     return vec![Command::Reply(
@@ -2364,6 +2374,20 @@ mod tests {
             vec![Command::StartTimer(TimerId::AwakeWindow, AWAKE_WINDOW)]
         );
         assert_eq!(engine.state(), State::LongSleep(Phase::Armed));
+    }
+
+    /// The cycle owns sleeping; a manual suspend would leave its alarm armed.
+    #[test]
+    fn ipc_sleep_is_refused_in_the_cycle() {
+        for phase in [Phase::Grace, Phase::Armed, Phase::Checking] {
+            let mut engine = server_in(phase);
+            let commands = engine.handle(ipc(Request::Sleep { force: true }));
+            assert!(
+                matches!(commands.as_slice(), [Command::Reply(7, Response::Error(_))]),
+                "{phase}: {commands:?}"
+            );
+            assert_eq!(engine.state(), State::LongSleep(phase), "{phase}");
+        }
     }
 
     /// A retry armed before the cycle must not fire inside it: that would be
