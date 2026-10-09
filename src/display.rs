@@ -24,6 +24,8 @@ pub struct Display {
     /// Idempotency lives here, not in the FSM (`docs/06-display-dpms.md`).
     /// `None` means "unknown", which is also where a failed command leaves it.
     last: Option<bool>,
+    /// The "no way to turn the screen off" warning was given.
+    warned: bool,
 }
 
 enum Backend {
@@ -68,6 +70,7 @@ impl Display {
             backend,
             compositor: compositor.clone(),
             last: None,
+            warned: false,
         }
     }
 
@@ -93,6 +96,7 @@ impl Display {
         let command = match &self.backend {
             Backend::Wlr { idle, fallback } => {
                 if idle.output_power_available() {
+                    self.warned = false;
                     idle.set_screen(on);
                     self.last = Some(on);
                     return;
@@ -103,8 +107,14 @@ impl Display {
                         Some(if on { on_cmd.clone() } else { off.clone() })
                     }
                     None => {
-                        idle.set_screen(on);
-                        self.last = Some(on);
+                        // Nothing happens, so nothing is remembered: the next
+                        // request tries again (`docs/06-display-dpms.md`).
+                        if !self.warned {
+                            warn!(
+                                "no zwlr_output_power_manager_v1 and no fallback commands; the screen stays as it is"
+                            );
+                            self.warned = true;
+                        }
                         return;
                     }
                 }
@@ -182,7 +192,28 @@ mod tests {
                 display: "wayland-0".into(),
             },
             last: None,
+            warned: false,
         };
         assert!(display.is_available());
+    }
+
+    /// No protocol and no fallback commands: nothing happens, so nothing
+    /// may be remembered — the next `Screen(*)` must try again.
+    #[tokio::test]
+    async fn wlr_without_the_protocol_does_not_latch() {
+        let mut display = Display {
+            backend: Backend::Wlr {
+                idle: IdleHandle::detached(false),
+                fallback: None,
+            },
+            compositor: Compositor {
+                runtime_dir: "/nonexistent".into(),
+                display: "wayland-0".into(),
+            },
+            last: None,
+            warned: false,
+        };
+        display.set(false).await;
+        assert_eq!(display.last, None);
     }
 }

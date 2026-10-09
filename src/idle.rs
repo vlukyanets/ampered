@@ -83,6 +83,15 @@ impl IdleHandle {
     pub fn output_power_available(&self) -> bool {
         self.output_power.load(Ordering::Relaxed)
     }
+
+    /// A handle with no connection behind it, for the `display` tests.
+    #[cfg(test)]
+    pub(crate) fn detached(output_power: bool) -> IdleHandle {
+        IdleHandle {
+            requests: mpsc::unbounded_channel().0,
+            output_power: Arc::new(AtomicBool::new(output_power)),
+        }
+    }
 }
 
 /// Connects to the compositor and keeps reconnecting for the agent's lifetime.
