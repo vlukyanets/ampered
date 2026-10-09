@@ -635,7 +635,11 @@ impl Engine {
         self.state = State::LongSleep(Phase::Grace);
         self.sleep_failures = 0;
         self.interrupted = false;
-        vec![Command::StartTimer(TimerId::Grace, delay)]
+        // A retry from before the cycle would fire inside it and send a
+        // plain `Suspend` with no alarm armed.
+        let mut commands = self.cancel_pending_sleep();
+        commands.push(Command::StartTimer(TimerId::Grace, delay));
+        commands
     }
 
     /// Schedule the wake; the suspend follows `WakeScheduled(true)`.
@@ -2282,6 +2286,29 @@ mod tests {
             effects(engine.handle(Event::Timer(TimerId::AwakeWindow))),
             vec![Command::ScheduleWake(CHECK_INTERVAL)]
         );
+    }
+
+    /// A retry armed before the cycle must not fire inside it: that would be
+    /// a plain `Suspend` with no alarm armed.
+    #[test]
+    fn ac_loss_cancels_a_pending_sleep_retry() {
+        let mut engine = server();
+        engine.handle(Event::Idle(Stage::Dim));
+        engine.handle(Event::Idle(Stage::ScreenOff));
+        engine.handle(Event::Inhibitors(vec![inhibitor("firefox")]));
+        engine.handle(Event::Idle(Stage::Sleep));
+
+        let commands = engine.handle(Event::AcChanged(false));
+        assert!(
+            commands.contains(&Command::CancelTimer(TimerId::SleepRetry)),
+            "{commands:?}"
+        );
+        assert_eq!(engine.state(), State::LongSleep(Phase::Grace));
+
+        // A stale tick of the cancelled timer does nothing.
+        engine.handle(Event::Inhibitors(vec![]));
+        assert_eq!(engine.handle(Event::Timer(TimerId::SleepRetry)), vec![]);
+        assert_eq!(engine.state(), State::LongSleep(Phase::Grace));
     }
 
     #[test]
