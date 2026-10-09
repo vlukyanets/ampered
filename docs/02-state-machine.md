@@ -3,6 +3,8 @@
 `core::Engine` is a pure function `handle(&mut self, Event) -> Vec<Command>`.
 No I/O inside. Timers are also commands (`Command::StartTimer`) and events
 (`Event::Timer`), so the FSM can be tested without `tokio::time`.
+A fire from a timer that was restarted or cancelled in the meantime is
+dropped before it reaches the FSM (each start has a generation).
 
 ## States
 

@@ -193,7 +193,7 @@ async fn run(cli: Cli, config: Config, notifier: Notifier) -> Result<()> {
         config_path: cli.config.clone(),
         config: config.clone(),
         server,
-        timers: Timers::new(events_tx.clone()),
+        timers: Timers::new(),
         modes: ModeApplier::new(SysfsModeSink::new()),
         backlight,
         session,
@@ -251,14 +251,17 @@ async fn run(cli: Cli, config: Config, notifier: Notifier) -> Result<()> {
             }
         }
 
-        let Some(event) = events_rx.recv().await else {
+        let event = tokio::select! {
+            event = events_rx.recv() => event,
+            id = daemon.timers.fired() => Some(Event::Timer(id)),
+        };
+        let Some(event) = event else {
             warn!("every event source is gone");
             daemon.cleanup();
             return Ok(());
         };
         let mut woke_in_cycle = false;
         match &event {
-            Event::Timer(id) => daemon.timers.forget(*id),
             // Values read straight after resume can still be the old ones.
             Event::Resumed => {
                 daemon.supply.recheck_after_resume();
