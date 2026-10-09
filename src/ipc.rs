@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -254,12 +254,23 @@ pub enum StateEvent {
 
 // ------------------------------------------------------------------ server
 
+/// Why `listen` could not provide a socket (ADR-18).
+#[derive(Debug, thiserror::Error)]
+pub enum ListenError {
+    /// Somebody answers on the socket: another daemon is running.
+    #[error("another ampered is listening on the socket")]
+    AlreadyRunning,
+    #[error(transparent)]
+    Io(#[from] io::Error),
+}
+
 /// Hands replies and broadcasts back to the connections waiting for them.
 #[derive(Clone)]
 pub struct Server {
     pending: Arc<Mutex<HashMap<RequestId, oneshot::Sender<Response>>>>,
     broadcast: broadcast::Sender<StateEvent>,
     next_id: Arc<AtomicU64>,
+    socket: Option<PathBuf>,
 }
 
 impl Server {
@@ -280,6 +291,23 @@ impl Server {
         let _ = self.broadcast.send(event);
     }
 
+    /// A server with no socket behind it, for a daemon running without IPC:
+    /// replies find nobody waiting and broadcasts reach no subscriber.
+    /// The socket this server bound, which is ours to remove on exit; `None`
+    /// for a detached server, which must leave the path alone (ADR-18).
+    pub fn socket(&self) -> Option<&Path> {
+        self.socket.as_deref()
+    }
+
+    pub fn detached() -> Server {
+        Server {
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            broadcast: broadcast::channel(1).0,
+            next_id: Arc::new(AtomicU64::new(1)),
+            socket: None,
+        }
+    }
+
     fn take_id(&self) -> RequestId {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
@@ -295,13 +323,19 @@ pub async fn listen(
     group: &str,
     events: mpsc::Sender<Event>,
     agent: Option<AgentLink>,
-) -> io::Result<Server> {
+) -> Result<Server, ListenError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    // A socket left behind by a killed daemon would make bind() fail.
+    // A socket left behind by a killed daemon would make bind() fail; one
+    // that still answers belongs to a running daemon (ADR-18).
     match std::fs::metadata(path) {
-        Ok(meta) if meta.file_type().is_socket() => std::fs::remove_file(path)?,
+        Ok(meta) if meta.file_type().is_socket() => {
+            if std::os::unix::net::UnixStream::connect(path).is_ok() {
+                return Err(ListenError::AlreadyRunning);
+            }
+            std::fs::remove_file(path)?;
+        }
         _ => {}
     }
 
@@ -321,11 +355,10 @@ pub async fn listen(
     }
     info!(socket = %path.display(), "listening");
 
-    let (broadcast_tx, _) = broadcast::channel(64);
     let server = Server {
-        pending: Arc::new(Mutex::new(HashMap::new())),
-        broadcast: broadcast_tx,
-        next_id: Arc::new(AtomicU64::new(1)),
+        broadcast: broadcast::channel(64).0,
+        socket: Some(path.to_path_buf()),
+        ..Server::detached()
     };
 
     let accepting = server.clone();
@@ -573,6 +606,70 @@ mod tests {
         send(&mut write, r#"{"cmd":"agent"}"#).await;
         let line = lines.next_line().await.unwrap().unwrap();
         assert!(line.contains("privilege"), "{line}");
+    }
+
+    #[tokio::test]
+    async fn listen_refuses_a_live_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ampered.sock");
+        let (events_tx, mut events_rx) = mpsc::channel(8);
+        let server = listen(&path, "", events_tx.clone(), None).await.unwrap();
+
+        let second = listen(&path, "", events_tx, None).await;
+        assert!(
+            matches!(second, Err(ListenError::AlreadyRunning)),
+            "{:?}",
+            second.err()
+        );
+
+        // The first daemon still owns the socket.
+        let (mut lines, mut write) = client(&path).await;
+        send(&mut write, r#"{"cmd":"status"}"#).await;
+        let Some(Event::Ipc(id, Request::Status)) = events_rx.recv().await else {
+            panic!("expected a status request");
+        };
+        server.reply(id, Response::Ok);
+        assert_eq!(lines.next_line().await.unwrap().unwrap(), r#"{"ok":true}"#);
+    }
+
+    #[tokio::test]
+    async fn listen_replaces_a_stale_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ampered.sock");
+        // A killed daemon: the file stays, nobody listens.
+        drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+        let (events_tx, _events_rx) = mpsc::channel(8);
+        assert!(listen(&path, "", events_tx, None).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn listen_leaves_a_regular_file_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ampered.sock");
+        std::fs::write(&path, "keep me").unwrap();
+        let (events_tx, _events_rx) = mpsc::channel(8);
+        let result = listen(&path, "", events_tx, None).await;
+        assert!(matches!(result, Err(ListenError::Io(_))));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep me");
+    }
+
+    /// Only a server that bound the socket may remove it on exit; a detached
+    /// one would delete whatever is in the way.
+    #[tokio::test]
+    async fn only_a_bound_server_owns_the_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ampered.sock");
+        let (events_tx, _events_rx) = mpsc::channel(8);
+        let server = listen(&path, "", events_tx, None).await.unwrap();
+        assert_eq!(server.socket(), Some(path.as_path()));
+        assert_eq!(Server::detached().socket(), None);
+    }
+
+    #[test]
+    fn detached_server_drops_replies() {
+        let server = Server::detached();
+        server.reply(1, Response::Ok);
+        server.broadcast(StateEvent::Power { ac: true });
     }
 
     #[tokio::test]

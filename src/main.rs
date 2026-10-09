@@ -100,17 +100,31 @@ async fn run(cli: Cli, config: Config, notifier: Notifier) -> Result<()> {
         Privilege::Split => Some(AgentLink::new(&config.display)),
         Privilege::Root => None,
     };
-    let server = ipc::listen(
+    // Another instance is fatal; any other socket problem is a missing
+    // subsystem (ADR-18).
+    let listened = ipc::listen(
         &socket,
         &config.general.socket_group,
         events_tx.clone(),
         agent.clone(),
     )
-    .await
-    .with_context(|| format!("ipc socket {}", socket.display()))?;
+    .await;
+    let (server, ipc_failed) = match listened {
+        Ok(server) => (server, false),
+        Err(err @ ipc::ListenError::AlreadyRunning) => {
+            return Err(err).with_context(|| format!("ipc socket {}", socket.display()));
+        }
+        Err(ipc::ListenError::Io(err)) => {
+            error!(%err, socket = %socket.display(), "cannot create the IPC socket; running without it");
+            (ipc::Server::detached(), true)
+        }
+    };
     spawn_signal_handlers(events_tx.clone())?;
 
     let mut degraded = modes::detect_conflicts().await;
+    if ipc_failed {
+        degraded.push("ipc".into());
+    }
 
     let backlight = Backlight::from_config(&config.backlight);
     if !backlight.is_available() {
@@ -178,7 +192,6 @@ async fn run(cli: Cli, config: Config, notifier: Notifier) -> Result<()> {
     let mut daemon = Daemon {
         config_path: cli.config.clone(),
         config: config.clone(),
-        socket,
         server,
         timers: Timers::new(events_tx.clone()),
         modes: ModeApplier::new(SysfsModeSink::new()),
@@ -320,7 +333,6 @@ impl Session {
 struct Daemon {
     config_path: PathBuf,
     config: Arc<Config>,
-    socket: PathBuf,
     server: ipc::Server,
     timers: Timers,
     modes: ModeApplier<SysfsModeSink>,
@@ -613,9 +625,14 @@ impl Daemon {
         }
     }
 
+    /// Removes our socket — only one we bound: without IPC the path may hold
+    /// something that is not ours (ADR-18).
     fn cleanup(&self) {
-        if let Err(err) = std::fs::remove_file(&self.socket) {
-            debug!(%err, socket = %self.socket.display(), "could not remove the socket");
+        let Some(socket) = self.server.socket() else {
+            return;
+        };
+        if let Err(err) = std::fs::remove_file(socket) {
+            debug!(%err, socket = %socket.display(), "could not remove the socket");
         }
     }
 }
