@@ -60,10 +60,11 @@ it leaves whatever is at the socket path alone, since it never bound it.
 ```
 
 `degraded` — a list of subsystems that are `unavailable`, and of
-configuration that works against ampered: `"ipc"`, `"wayland"`, `"backlight"`,
-`"display"`, `"logind"`, `"hibernate"`, `"rtc"`, `"conflict:tlp"`,
-`"lid-switch"`, `"idle-action"` (the last two from `logind.conf`,
-`09-sleep-logind.md`).
+configuration that works against ampered: `"ipc"`, `"agent"`, `"wayland"`,
+`"backlight"`, `"display"`, `"power"`, `"logind"`, `"hibernate"`, `"rtc"`,
+`"conflict:tlp"`, `"lid-switch"`, `"idle-action"` (the last two from
+`logind.conf`, `09-sleep-logind.md`). `"power"` is there only while the
+power supply cannot be read, and goes away with the next good read.
 
 ### `subscribe`
 
