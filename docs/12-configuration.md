@@ -8,7 +8,7 @@ Unknown keys are an error (`deny_unknown_fields`).
 
 | Key | Default | Description |
 |---|---|---|
-| `log_level` | `"info"` | `error`…`trace`; `RUST_LOG` takes priority |
+| `log_level` | `"info"` | `error`, `warn`, `info`, `debug` or `trace` — anything else is an invalid config; `RUST_LOG` (full filter syntax) takes priority |
 | `socket` | `"/run/ampered/ampered.sock"` | IPC socket (not re-read on reload) |
 | `privilege` | `"root"` | `root` / `split`: who owns the Wayland connection, see `docs/03-privileges.md` (not re-read on reload) |
 | `socket_group` | `"users"` | Group allowed to write to the socket |
