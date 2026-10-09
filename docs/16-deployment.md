@@ -40,7 +40,7 @@ StateDirectory=ampered
 
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/sys/class/backlight /sys/firmware/acpi /sys/devices/system/cpu /sys/class/rtc /sys/class/leds
+ReadWritePaths=-/sys/class/backlight -/sys/firmware/acpi -/sys/devices/system/cpu -/sys/class/rtc -/sys/class/leds
 PrivateTmp=yes
 NoNewPrivileges=yes
 RestrictAddressFamilies=AF_UNIX AF_NETLINK
@@ -50,6 +50,10 @@ CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_TIME CAP_SETUID CAP_SETGID CAP_NET_A
 [Install]
 WantedBy=multi-user.target
 ```
+
+The `-` in `ReadWritePaths` skips a path the machine does not have (most
+ARM laptops have no `/sys/firmware/acpi`) instead of failing to start with
+226/NAMESPACE.
 
 `ProtectHome=read-only` — the Wayland socket lives in `/run/user/*`, not
 in `$HOME`; but `off_command` might run something from `~/.local/bin` —
