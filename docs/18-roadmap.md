@@ -27,9 +27,12 @@ The checked items are implemented. Tests: `config`, `core`, `backlight` and
 
 ## v0.3 — "security and reach"
 - [x] Split mode: `ampered-agent` over the IPC socket (ADR-16)
-- [ ] `mutter` idle backend (GNOME)
 - [x] Check `logind.conf` for `HandleLidSwitch` in server mode, and `IdleAction` always
-- [ ] Packages: AUR, nix flake
+- [ ] Packages: AUR
+
+## Not planned
+- `mutter` idle backend (GNOME)
+- nix flake
 
 ## Later / undecided
 - DDC/CI for external monitors

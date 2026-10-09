@@ -42,7 +42,7 @@ Neither solves the "laptop-as-a-server without a UPS" scenario.
 - Doesn't fully replace TLP/PPD — only writes the knobs described in the mode.
   Running alongside PPD at the same time is not supported (see `08-power-modes.md`).
 - Doesn't manage external monitors over DDC/CI (roadmap).
-- Doesn't support GNOME/Mutter in v0.1 (no `ext-idle-notify`; roadmap).
+- Doesn't support GNOME/Mutter (no `ext-idle-notify`; not planned).
 - No GUI/tray.
 
 ## Requirements
