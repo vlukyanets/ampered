@@ -196,6 +196,9 @@ pub enum Event {
     Suspending,
     /// `PrepareForSleep(false)`.
     Resumed,
+    /// `PrepareForSleep(false)` in the cycle, and the daemon found it was not
+    /// the alarm (ADR-19). Outside the cycle, the same as `Resumed`.
+    ResumedByUser,
     Timer(TimerId),
     Ipc(RequestId, Request),
     /// The compositor connected or was lost.
@@ -418,7 +421,8 @@ impl Engine {
             Event::AcChanged(ac) => self.on_ac_changed(ac),
             Event::Battery(percent) => self.on_battery(percent),
             Event::Suspending => self.on_suspending(),
-            Event::Resumed => self.on_resumed(),
+            Event::Resumed => self.on_resumed(false),
+            Event::ResumedByUser => self.on_resumed(true),
             Event::Timer(id) => self.on_timer(id),
             Event::Ipc(id, request) => self.on_ipc(id, request),
             Event::IdleBackendChanged(connected) => {
@@ -598,9 +602,16 @@ impl Engine {
         Vec::new()
     }
 
-    fn on_resumed(&mut self) -> Vec<Command> {
+    fn on_resumed(&mut self, by_user: bool) -> Vec<Command> {
         self.pending_sleep = false;
         if let State::LongSleep(_) = self.state {
+            // The user comes before the critical action (ADR-19); power
+            // that is back still runs the hook.
+            if by_user && !self.power.ac {
+                self.interrupted = true;
+                info!("long sleep interrupted by the user");
+                return self.leave_cycle();
+            }
             return self.check_power();
         }
         self.state = State::Active;
@@ -1328,6 +1339,12 @@ mod tests {
                 vec![Undim, Screen(true)],
             ),
             (Sleeping, Event::Activity, Sleeping, vec![]),
+            (
+                Sleeping,
+                Event::ResumedByUser,
+                Active,
+                vec![Undim, Screen(true), ReplaceIdleStages(stages("ac"))],
+            ),
             // logind refused the suspend (ADR-17).
             (
                 Suspending,
@@ -2374,6 +2391,37 @@ mod tests {
             vec![Command::StartTimer(TimerId::AwakeWindow, AWAKE_WINDOW)]
         );
         assert_eq!(engine.state(), State::LongSleep(Phase::Armed));
+    }
+
+    /// ADR-19: the user opened the lid at a critical battery; nothing gets
+    /// hibernated under their hands.
+    #[test]
+    fn user_wake_at_critical_battery_does_not_hibernate() {
+        let mut engine = server_in(Phase::Sleeping);
+        engine.handle(Event::Battery(9));
+        let commands = engine.handle(Event::ResumedByUser);
+        assert!(!commands.contains(&HIBERNATE), "{commands:?}");
+        assert!(!commands.contains(&Command::PowerOff), "{commands:?}");
+        assert!(commands.contains(&Command::CancelWake), "{commands:?}");
+        assert_eq!(engine.state(), State::Active);
+        assert_eq!(engine.status().server.phase, "interrupted");
+    }
+
+    /// Power is back as well: the hook still brings the services up.
+    #[test]
+    fn user_wake_with_ac_runs_the_hook() {
+        let mut engine = server_in(Phase::Sleeping);
+        engine.handle(Event::Battery(9));
+        engine.handle(Event::AcChanged(true));
+        let commands = engine.handle(Event::ResumedByUser);
+        assert!(!commands.contains(&HIBERNATE), "{commands:?}");
+        assert!(
+            commands.contains(&Command::RunHook(
+                "systemctl start my-services.target".into()
+            )),
+            "{commands:?}"
+        );
+        assert_eq!(engine.state(), State::Active);
     }
 
     /// The cycle owns sleeping; a manual suspend would leave its alarm armed.

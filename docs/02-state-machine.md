@@ -38,6 +38,7 @@ enum Event {
     Battery(u8),
     Suspending,                   // PrepareForSleep(true)
     Resumed,                      // PrepareForSleep(false)
+    ResumedByUser,                // PrepareForSleep(false), a cycle wake not by the alarm (ADR-19)
     Timer(TimerId),               // Grace | SleepRetry | AwakeWindow | InhibitExpiry(id)
     Ipc(RequestId, Request),
     IdleBackendChanged(bool),     // compositor connected/lost

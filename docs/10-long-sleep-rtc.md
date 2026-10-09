@@ -22,9 +22,9 @@ expires with AC still gone, the cycle begins:
   cycle without an armed alarm, so `WakeScheduled(false)` (no RTC, a
   write error) counts as a failed attempt instead.
 - **`LongSleep(Sleeping)`**: wait for `PrepareForSleep(false)`.
-- **`LongSleep(Checking)`**: classify the wake-up reason. If it was the
-  `User` (lid opened, input), go to `Active`. If AC is online, run
-  `resume_hook` and go to `Active`. If battery is at or below
+- **`LongSleep(Checking)`**: if AC is online, run `resume_hook` and go
+  to `Active`. If the wake was the `User` (lid opened, input), go to
+  `Active` — before any critical action. If battery is at or below
   `critical_action`'s threshold, perform the critical action (hibernate or
   poweroff). Otherwise, start an `AwakeWindow` timer.
 - **`Timer(AwakeWindow)`**: re-read the power snapshot; if AC is present,
@@ -51,6 +51,8 @@ While in `LongSleep`, idle stages are not created
 | Sleeping | Resumed | ac | Active | RunHook, ApplyMode, ReplaceIdleStages |
 | Sleeping | Resumed | battery ≤ critical | Checking | Broadcast(critical), Suspend{Hibernate, force} or PowerOff, StartTimer(AwakeWindow) |
 | Sleeping | Resumed | otherwise | Checking | StartTimer(AwakeWindow) |
+| Sleeping | ResumedByUser | ac | Active | RunHook, ApplyMode, ReplaceIdleStages |
+| Sleeping | ResumedByUser | otherwise | Active | CancelWake, ApplyMode, ReplaceIdleStages, Broadcast(interrupted) |
 | Checking | Activity | classify = User, lid, input | Active | CancelTimer(AwakeWindow), Broadcast(interrupted) |
 | Checking | SleepFailed | the critical hibernate was refused | Checking | — (the window is already running) |
 | Checking | AcChanged(true) | | Active | CancelTimer(AwakeWindow), RunHook, ApplyMode, ReplaceIdleStages |
@@ -61,9 +63,11 @@ While in `LongSleep`, idle stages are not created
 
 `*` — Active, Dimmed, ScreenOff.
 
-A wake by the user does not have its own event: the daemon classifies the
-wake right after `Resumed` and feeds `Activity` (ADR-13), which is also what
-the compositor sends when the lid opens during `Checking`. Every exit from
+The daemon classifies a wake in the cycle before the engine sees it, and
+sends `ResumedByUser` instead of `Resumed` for a wake that was not the
+alarm (ADR-19): the engine never queues the critical action for a machine
+the user has just opened. The lid opening later, during `Checking`, is
+`Activity` from the compositor. Every exit from
 the cycle to `Active` after a sleep also sends `Undim` and `Screen(true)`,
 for the same reason a regular `Resumed` does.
 
