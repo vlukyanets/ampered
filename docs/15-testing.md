@@ -3,7 +3,8 @@
 > **Status:** suites exist for `config`, `core`, `backlight`, `display`,
 > `power::supply`, `sleep::rtc`, `sleep::planner`, `timers`, `ipc`,
 > `agent`, `logind` (the `IdleHint` fallback only), `logind_conf` and
-> `notify`. Not covered: `idle`, `power::modes`, the logind executor and
+> `notify`, and `power::modes` (the conflict scan only). Not covered:
+> `idle`, applying a mode in `power::modes`, the logind executor and
 > listener, `main.rs`, and the `amperedctl` and `ampered-agent` binaries.
 > The suites touch nothing outside the process except: the `ipc` tests use
 > a real socket in a tempdir, the one subprocess is a `resume_hook` test

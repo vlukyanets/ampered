@@ -106,7 +106,8 @@ stream closes the daemon behaves as if the compositor went away:
 ## Internal inhibitors
 
 `what`: `idle` (ignore all stages) | `sleep` (sleep only). `ttl` is
-mandatory, capped at `24h` — a forgotten inhibitor shouldn't live forever.
+mandatory, capped at `24h` — a longer one is cut down to `24h`, not
+refused; a forgotten inhibitor shouldn't live forever.
 These are honored **in addition to** logind and the compositor.
 
 ## CLI

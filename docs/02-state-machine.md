@@ -78,7 +78,7 @@ enum Command {
 | State | Event | Condition | New state | Commands |
 |---|---|---|---|---|
 | Active | Idle(Dim) | — | Dimmed | Dim(pct) |
-| Active | Idle(ScreenOff) | dim disabled | ScreenOff | Screen(false) |
+| Active | Idle(ScreenOff) | dim disabled, or a compositor restart delivers the later stage first | ScreenOff | Screen(false) |
 | Dimmed | Idle(ScreenOff) | — | ScreenOff | Screen(false) |
 | Dimmed | Activity | — | Active | Undim |
 | ScreenOff | Idle(Sleep) | no inhibitors | Suspending | Suspend |

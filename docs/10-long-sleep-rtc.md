@@ -39,9 +39,11 @@ While in `LongSleep`, idle stages are not created
 | State | Event | Condition | New | Commands |
 |---|---|---|---|---|
 | Active* | AcChanged(false) | server.enabled, trigger=ac_lost | Grace | CancelTimer(SleepRetry) if pending, StartTimer(Grace) |
-| Any | Ipc(LongSleep) | server.enabled | Grace | CancelTimer(SleepRetry) if pending, StartTimer(Grace, 0) |
+| Active* | Ipc(LongSleep) | server.enabled | Grace | CancelTimer(SleepRetry) if pending, StartTimer(Grace, 0) |
 | Grace | AcChanged(true) | | Active | CancelTimer(Grace) |
 | Grace | Timer(Grace) | | Armed | ReplaceIdleStages(None), ScheduleWake |
+| Grace | Idle(*) / Activity | | Grace | — (the screen is not dimmed during the grace period) |
+| Grace | Suspending | someone else suspends (lid, `systemctl suspend`) | Sleeping | — |
 | Armed | WakeScheduled(true) | ac | Active | RunHook, ApplyMode, ReplaceIdleStages |
 | Armed | WakeScheduled(true) | no inhibitors | Armed | Suspend |
 | Armed | WakeScheduled(false) / SleepBlocked / SleepFailed / Activity | the alarm or the suspend didn't happen | Armed | sleep_failures += 1; < 3 → StartTimer(AwakeWindow), ≥ 3 → Active |
@@ -52,7 +54,7 @@ While in `LongSleep`, idle stages are not created
 | Sleeping | Resumed | battery ≤ critical | Checking | Broadcast(critical), Suspend{Hibernate, force} or PowerOff, StartTimer(AwakeWindow) |
 | Sleeping | Resumed | otherwise | Checking | StartTimer(AwakeWindow) |
 | Sleeping | ResumedByUser | ac | Active | RunHook, ApplyMode, ReplaceIdleStages |
-| Sleeping | ResumedByUser | otherwise | Active | CancelWake, ApplyMode, ReplaceIdleStages, Broadcast(interrupted) |
+| Sleeping | ResumedByUser | otherwise | Active | CancelWake, ApplyMode, ReplaceIdleStages, Undim, Screen(true); the phase reads `interrupted` |
 | Checking | Activity | classify = User, lid, input | Active | CancelTimer(AwakeWindow), Broadcast(interrupted) |
 | Checking | SleepFailed | the critical hibernate was refused | Checking | — (the window is already running) |
 | Checking | AcChanged(true) | | Active | CancelTimer(AwakeWindow), RunHook, ApplyMode, ReplaceIdleStages |
@@ -81,6 +83,11 @@ never mistaken for the user opening the lid (ADR-17).
 A pending `SleepRetry` from before the cycle is cancelled on the way into
 `Grace`: it would otherwise fire inside the cycle and send a plain
 `Suspend` with no alarm armed.
+
+`amperedctl undim` and `amperedctl screen on` go through `Activity`: in
+`Armed` they count as an attempt that did not sleep, in `Checking` they end
+the cycle as interrupted. `Ipc(LongSleep)` is refused while the machine is
+going to sleep (`Suspending`, `Sleeping`) and inside the cycle.
 
 The daemon restarted in the middle of the cycle (`state.json` says
 `LongSleep`, no AC at startup) starts in `Checking` with the window running.

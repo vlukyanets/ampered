@@ -20,8 +20,9 @@ dependency and an extra D-Bus hop for just two numbers.
 
 Two sources, both required:
 
-1. **udev netlink** (`subsystem == "power_supply"`, `action == "change"`) —
-   an immediate reaction to plugging/unplugging the adapter.
+1. **udev netlink** (`subsystem == "power_supply"`, `action` one of
+   `change`, `add`, `remove` — a battery can appear or vanish) — an
+   immediate reaction to plugging/unplugging the adapter.
 2. **Polling every 60s** — a safety net: some ECs don't send a uevent when
    `online` changes, and `capacity` changes without events.
 
@@ -35,7 +36,8 @@ after resume the driver can return stale values.
 ## "Low battery" hysteresis
 
 `low = true` at `capacity ≤ low_battery_percent`,
-`low = false` at `capacity ≥ low_battery_percent + 5`.
+`low = false` at `capacity ≥ low_battery_percent + 5`, capped at 100 so a
+threshold above 95 can still clear.
 Without this the mode would flap back and forth right at the boundary.
 
 ## Implementation
