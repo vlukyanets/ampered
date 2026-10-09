@@ -7,6 +7,7 @@ use std::fs;
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -134,17 +135,22 @@ impl FakePowerSource {
         }
     }
 
-    /// Parses the `--fake-power ac | bat:NN` argument from `docs/15-testing.md`.
+    /// Parses the `--fake-power ac | ac:NN | bat | bat:NN` argument from
+    /// `docs/15-testing.md`.
     pub fn parse(spec: &str) -> Result<FakePowerSource, String> {
+        let percent = |text: &str, what: &str| match text.parse::<u8>() {
+            Ok(value) if value <= 100 => Ok(value),
+            _ => Err(format!("expected {what}:NN with NN in 0..=100")),
+        };
         let snapshot = match spec.split_once(':') {
-            Some(("bat", percent)) => PowerSnapshot {
+            Some(("bat", value)) => PowerSnapshot {
                 ac: false,
-                battery: Some(percent.parse().map_err(|_| "expected bat:NN")?),
+                battery: Some(percent(value, "bat")?),
                 batteries: vec!["BAT0".into()],
             },
-            Some(("ac", percent)) => PowerSnapshot {
+            Some(("ac", value)) => PowerSnapshot {
                 ac: true,
-                battery: Some(percent.parse().map_err(|_| "expected ac:NN")?),
+                battery: Some(percent(value, "ac")?),
                 batteries: vec!["BAT0".into()],
             },
             None if spec == "ac" => PowerSnapshot::on_ac(),
@@ -153,7 +159,11 @@ impl FakePowerSource {
                 battery: Some(50),
                 batteries: vec!["BAT0".into()],
             },
-            _ => return Err(format!("cannot parse {spec:?}, expected ac, bat or bat:NN")),
+            _ => {
+                return Err(format!(
+                    "cannot parse {spec:?}, expected ac, ac:NN, bat or bat:NN"
+                ));
+            }
         };
         Ok(FakePowerSource::new(snapshot))
     }
@@ -176,6 +186,7 @@ impl PowerSource for FakePowerSource {
 pub struct SupplyHandle {
     refresh: mpsc::Sender<()>,
     latest: Arc<Mutex<PowerSnapshot>>,
+    readable: Arc<AtomicBool>,
 }
 
 impl SupplyHandle {
@@ -193,6 +204,11 @@ impl SupplyHandle {
     pub fn latest(&self) -> PowerSnapshot {
         crate::locked(&self.latest).clone()
     }
+
+    /// Whether the last read of the source succeeded.
+    pub fn readable(&self) -> bool {
+        self.readable.load(Ordering::Relaxed)
+    }
 }
 
 /// Watches the power supply and turns changes into events.
@@ -203,13 +219,16 @@ impl SupplyHandle {
 pub fn spawn(
     source: Arc<dyn PowerSource + Send + Sync>,
     initial: PowerSnapshot,
+    readable: bool,
     events: mpsc::Sender<Event>,
 ) -> SupplyHandle {
     let (refresh_tx, mut refresh_rx) = mpsc::channel(4);
     let latest = Arc::new(Mutex::new(initial.clone()));
+    let readable = Arc::new(AtomicBool::new(readable));
     let handle = SupplyHandle {
         refresh: refresh_tx,
         latest: latest.clone(),
+        readable: readable.clone(),
     };
 
     tokio::spawn(async move {
@@ -236,14 +255,9 @@ pub fn spawn(
                 }
             }
 
-            let snapshot = match source.snapshot() {
-                Ok(snapshot) => snapshot,
-                Err(err) => {
-                    warn!(%err, "cannot read the power supply");
-                    continue;
-                }
+            let Some(snapshot) = read(source.as_ref(), &latest, &readable) else {
+                continue;
             };
-            *crate::locked(&latest) = snapshot.clone();
 
             for event in diff(&previous, &snapshot) {
                 if events.send(event).await.is_err() {
@@ -255,6 +269,27 @@ pub fn spawn(
     });
 
     handle
+}
+
+/// One read of the source: the new snapshot, and whether the source
+/// answers at all — `status.degraded` shows `power` while it does not.
+fn read(
+    source: &dyn PowerSource,
+    latest: &Mutex<PowerSnapshot>,
+    readable: &AtomicBool,
+) -> Option<PowerSnapshot> {
+    match source.snapshot() {
+        Ok(snapshot) => {
+            readable.store(true, Ordering::Relaxed);
+            *crate::locked(latest) = snapshot.clone();
+            Some(snapshot)
+        }
+        Err(err) => {
+            readable.store(false, Ordering::Relaxed);
+            warn!(%err, "cannot read the power supply");
+            None
+        }
+    }
 }
 
 /// Only real changes become events: AC always, battery from one percent up.
@@ -352,6 +387,36 @@ mod tests {
     //! `/sys/class/power_supply`. Nothing here opens netlink.
 
     use super::*;
+
+    /// Fails until told otherwise, like an EC that is not ready yet.
+    struct Flaky {
+        fail: AtomicBool,
+    }
+
+    impl PowerSource for Flaky {
+        fn snapshot(&self) -> io::Result<PowerSnapshot> {
+            if self.fail.load(Ordering::Relaxed) {
+                return Err(io::Error::other("EIO"));
+            }
+            Ok(PowerSnapshot::on_ac())
+        }
+    }
+
+    #[test]
+    fn power_is_readable_again_after_a_failure() {
+        let source = Flaky {
+            fail: AtomicBool::new(true),
+        };
+        let latest = Mutex::new(PowerSnapshot::on_ac());
+        let readable = AtomicBool::new(true);
+
+        assert!(read(&source, &latest, &readable).is_none());
+        assert!(!readable.load(Ordering::Relaxed));
+
+        source.fail.store(false, Ordering::Relaxed);
+        assert!(read(&source, &latest, &readable).is_some());
+        assert!(readable.load(Ordering::Relaxed));
+    }
 
     fn supply(root: &Path, name: &str, fields: &[(&str, &str)]) {
         let dir = root.join(name);
@@ -540,6 +605,8 @@ mod tests {
 
         assert!(FakePowerSource::parse("bat:full").is_err());
         assert!(FakePowerSource::parse("solar").is_err());
+        assert!(FakePowerSource::parse("bat:150").is_err());
+        assert!(FakePowerSource::parse("ac:101").is_err());
 
         let fake = FakePowerSource::parse("ac").unwrap();
         fake.set(bat15.clone());

@@ -60,10 +60,11 @@ it leaves whatever is at the socket path alone, since it never bound it.
 ```
 
 `degraded` — a list of subsystems that are `unavailable`, and of
-configuration that works against ampered: `"ipc"`, `"wayland"`, `"backlight"`,
-`"display"`, `"logind"`, `"hibernate"`, `"rtc"`, `"conflict:tlp"`,
-`"lid-switch"`, `"idle-action"` (the last two from `logind.conf`,
-`09-sleep-logind.md`).
+configuration that works against ampered: `"ipc"`, `"agent"`, `"wayland"`,
+`"backlight"`, `"display"`, `"power"`, `"logind"`, `"hibernate"`, `"rtc"`,
+`"conflict:tlp"`, `"lid-switch"`, `"idle-action"` (the last two from
+`logind.conf`, `09-sleep-logind.md`). `"power"` is there only while the
+power supply cannot be read, and goes away with the next good read.
 
 ### `subscribe`
 
@@ -105,7 +106,8 @@ stream closes the daemon behaves as if the compositor went away:
 ## Internal inhibitors
 
 `what`: `idle` (ignore all stages) | `sleep` (sleep only). `ttl` is
-mandatory, capped at `24h` — a forgotten inhibitor shouldn't live forever.
+mandatory, capped at `24h` — a longer one is cut down to `24h`, not
+refused; a forgotten inhibitor shouldn't live forever.
 These are honored **in addition to** logind and the compositor.
 
 ## CLI

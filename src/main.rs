@@ -135,16 +135,15 @@ async fn run(cli: Cli, config: Config, notifier: Notifier) -> Result<()> {
         }
         None => Arc::new(SysfsPowerSource::new()),
     };
-    let initial = match source.snapshot() {
-        Ok(snapshot) => snapshot,
+    let (initial, readable) = match source.snapshot() {
+        Ok(snapshot) => (snapshot, true),
         Err(err) => {
             warn!(%err, "cannot read the power supply, assuming AC");
-            degraded.push("power".into());
-            PowerSnapshot::on_ac()
+            (PowerSnapshot::on_ac(), false)
         }
     };
     info!(ac = initial.ac, battery = ?initial.battery, "power at startup");
-    let supply = supply::spawn(source, initial.clone(), events_tx.clone());
+    let supply = supply::spawn(source, initial.clone(), readable, events_tx.clone());
     let fallback: SharedFallback = Arc::new(std::sync::Mutex::new(IdleFallback {
         enabled: config.idle.fallback == IdleFallbackConfig::Logind,
         compositor: false,
@@ -434,6 +433,10 @@ impl Daemon {
     /// has no clock at all.
     fn enrich_status(&self, status: &mut StatusData) {
         status.degraded = self.degraded.clone();
+        // Clears itself once the power supply can be read again.
+        if !self.supply.readable() {
+            status.degraded.push("power".into());
+        }
         if !self.agent.is_connected() {
             status.degraded.push("agent".into());
         }

@@ -83,6 +83,15 @@ impl IdleHandle {
     pub fn output_power_available(&self) -> bool {
         self.output_power.load(Ordering::Relaxed)
     }
+
+    /// A handle with no connection behind it, for the `display` tests.
+    #[cfg(test)]
+    pub(crate) fn detached(output_power: bool) -> IdleHandle {
+        IdleHandle {
+            requests: mpsc::unbounded_channel().0,
+            output_power: Arc::new(AtomicBool::new(output_power)),
+        }
+    }
 }
 
 /// Connects to the compositor and keeps reconnecting for the agent's lifetime.
@@ -183,12 +192,14 @@ async fn session(
         return false;
     }
 
+    // Before any IdleBackendChanged: the agent reports the display's
+    // availability when it sees that event, reading this flag.
+    output_power.store(watcher.power_manager.is_some(), Ordering::Relaxed);
     if watcher.notifier.is_none() {
         // The global may still show up later; keep the connection and wait.
         warn!("no ext_idle_notifier_v1; idle is unavailable on this compositor");
         let _ = events.send(Event::IdleBackendChanged(false)).await;
     }
-    output_power.store(watcher.power_manager.is_some(), Ordering::Relaxed);
 
     let async_fd =
         match AsyncFd::with_interest(FdOf(connection.as_fd().as_raw_fd()), Interest::READABLE) {
@@ -204,6 +215,10 @@ async fn session(
             debug!(%err, "wayland dispatch failed");
             return watcher.announced;
         }
+        // The registry may just have announced the manager, maybe in the
+        // same batch as the notifier: refresh the flag before the events
+        // that make the agent read it.
+        output_power.store(watcher.power_manager.is_some(), Ordering::Relaxed);
         for event in watcher.outgoing.drain(..) {
             if events.send(event).await.is_err() {
                 return watcher.announced;
@@ -231,7 +246,6 @@ async fn session(
                     // The daemon is going away.
                     None => return watcher.announced,
                 }
-                output_power.store(watcher.power_manager.is_some(), Ordering::Relaxed);
             }
             ready = async_fd.readable() => {
                 let mut ready = match ready {

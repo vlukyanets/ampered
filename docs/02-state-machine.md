@@ -78,7 +78,7 @@ enum Command {
 | State | Event | Condition | New state | Commands |
 |---|---|---|---|---|
 | Active | Idle(Dim) | — | Dimmed | Dim(pct) |
-| Active | Idle(ScreenOff) | dim disabled | ScreenOff | Screen(false) |
+| Active | Idle(ScreenOff) | dim disabled, or a compositor restart delivers the later stage first | ScreenOff | Screen(false) |
 | Dimmed | Idle(ScreenOff) | — | ScreenOff | Screen(false) |
 | Dimmed | Activity | — | Active | Undim |
 | ScreenOff | Idle(Sleep) | no inhibitors | Suspending | Suspend |
@@ -98,7 +98,7 @@ enum Command {
 | LongSleep(*) | Ipc(LongSleep{cancel}) | — | Active | CancelTimer(*), CancelWake, Undim, Screen(true), ReplaceIdleStages |
 | * | Ipc(Mode(name)) | — | — | ApplyMode, ReplaceIdleStages, Reply |
 | * | ReloadRequested | — | — | Reload |
-| * | ShutdownRequested | — | — | Undim, Screen(true), Shutdown |
+| * | ShutdownRequested | — | — | CancelWake (in LongSleep), Undim, Screen(true), Shutdown |
 
 The full set of `LongSleep` transitions is in `10-long-sleep-rtc.md`.
 

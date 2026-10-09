@@ -3,7 +3,8 @@
 > **Status:** suites exist for `config`, `core`, `backlight`, `display`,
 > `power::supply`, `sleep::rtc`, `sleep::planner`, `timers`, `ipc`,
 > `agent`, `logind` (the `IdleHint` fallback only), `logind_conf` and
-> `notify`. Not covered: `idle`, `power::modes`, the logind executor and
+> `notify`, and `power::modes` (the conflict scan only). Not covered:
+> `idle`, applying a mode in `power::modes`, the logind executor and
 > listener, `main.rs`, and the `amperedctl` and `ampered-agent` binaries.
 > The suites touch nothing outside the process except: the `ipc` tests use
 > a real socket in a tempdir, the one subprocess is a `resume_hook` test
@@ -58,6 +59,7 @@ cargo run --bin amperedctl -- --socket /tmp/a.sock watch
 
 # 2. A fake power source to check auto-switching
 cargo run -- --socket /tmp/a.sock --fake-power bat:15
+#    (the spec is ac | ac:NN | bat | bat:NN, NN in 0..=100; bare bat is 50%)
 
 # 3. Long sleep on a short interval (careful: this will really put the machine to sleep)
 #    check_interval = "2m", awake_window = "20s"; keep `watch` running in another terminal
