@@ -22,7 +22,7 @@ planner. See the component table below for exactly what each side does.
 | `power::modes` | Applying a mode | `Command::ApplyMode` | sysfs |
 | `logind` | `Suspend`, `Hibernate`, `PrepareForSleep`, `ListInhibitors`, delay lock | D-Bus | `Event::Suspending`, `Event::Resumed`, `Event::SleepBlocked`, `Event::SleepFailed` |
 | `sleep::rtc` | RTC alarm (`wakealarm` / `rtcwake`) | `Command::ScheduleWake` | RTC |
-| `sleep::planner` | Wake classification, `resume_hook` | `Command::ScheduleWake`, `Event::Resumed` | `Event::Activity` for a wake by the user, `sh -c` |
+| `sleep::planner` | Wake classification, `resume_hook` | `Command::ScheduleWake`, `PrepareForSleep(false)` | `Event::ResumedByUser` for a wake by the user, `sh -c` |
 | `ipc` | NDJSON server over a Unix socket; `amperedctl` — a separate binary | socket | `Event::Ipc(req)` |
 | `agent` | Split mode (`03-privileges.md`): the daemon's end of the `ampered-agent` stream, standing in for `idle` and `display` | `Command::ReplaceIdleStages`, `Command::Screen` | `Event::Idle`, `Event::Activity`, `Event::IdleBackendChanged` |
 
@@ -50,8 +50,9 @@ planner. See the component table below for exactly what each side does.
 2. `Engine` → `Active`, `Command::Undim`, `Command::Screen(true)`,
    `Command::ReplaceIdleStages` (the compositor may have lost notifications).
 3. If it was in `LongSleep`, the FSM goes to `LongSleep(Checking)` instead,
-   and the planner classifies the wake-up: a wake by the user becomes
-   `Event::Activity`, which ends the cycle (`10-long-sleep-rtc.md`).
+   — unless the planner, which classifies the wake-up first, found it was
+   the user: then the event is `Event::ResumedByUser`, which ends the cycle
+   (`10-long-sleep-rtc.md`, ADR-19).
 
 ## Failure handling
 

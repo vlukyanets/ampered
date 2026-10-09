@@ -254,23 +254,28 @@ async fn run(cli: Cli, config: Config, notifier: Notifier) -> Result<()> {
             daemon.cleanup();
             return Ok(());
         };
-        let mut woke_in_cycle = false;
+        let mut woke_by_user = false;
         match &event {
             // Values read straight after resume can still be the old ones.
             Event::Resumed => {
                 daemon.supply.recheck_after_resume();
-                woke_in_cycle = engine.state() == State::LongSleep(Phase::Sleeping);
+                woke_by_user = engine.state() == State::LongSleep(Phase::Sleeping)
+                    && daemon.classify_wake() == Wake::User;
             }
             Event::IdleBackendChanged(connected) => {
                 ampered::locked(&daemon.fallback).compositor = *connected;
             }
             _ => {}
         }
+        // Before the engine sees the resume, or it queues the critical
+        // action for a machine the user has just opened (ADR-19).
+        let event = if woke_by_user {
+            Event::ResumedByUser
+        } else {
+            event
+        };
         debug!(?event, "event");
         commands = engine.handle(event);
-        if woke_in_cycle {
-            commands.extend(daemon.classify_wake(&mut engine));
-        }
         daemon.remember(&engine);
         daemon.report(&engine);
     }
@@ -466,16 +471,10 @@ impl Daemon {
             .map(|at| humantime::format_rfc3339_seconds(at).to_string())
     }
 
-    /// Right after `Resumed` in the cycle: was it the alarm, or the user?
-    /// A wake by the user is `Activity` to the engine (ADR-13).
-    fn classify_wake(&mut self, engine: &mut Engine) -> Vec<Command> {
-        let wake = self
-            .planner
-            .classify(std::time::SystemTime::now(), self.config.server.alarm_slack);
-        match wake {
-            Wake::Scheduled => Vec::new(),
-            Wake::User => engine.handle(Event::Activity),
-        }
+    /// A resume in the cycle: was it the alarm, or the user (ADR-19)?
+    fn classify_wake(&mut self) -> Wake {
+        self.planner
+            .classify(std::time::SystemTime::now(), self.config.server.alarm_slack)
     }
 
     fn reply(&self, id: RequestId, response: Response) {

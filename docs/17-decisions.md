@@ -76,7 +76,7 @@ format is a dozen lines of parsing. Consequences: group 1 needs CAP_NET_ADMIN,
 which the root unit has; without it the actor warns once and lives on the 60s
 poll, so a non-root development run still works.
 
-## ADR-13 — The clock stays out of the FSM: relative wakes, classification in the daemon
+## ADR-13 — The clock stays out of the FSM: relative wakes, classification in the daemon — partly superseded by ADR-19
 **2026-09.** `Command::ScheduleWake` carries a `Duration` (`check_interval`),
 and `main` adds `now`, arms the RTC, remembers the absolute time and answers
 `Event::WakeScheduled(bool)`; only `true` lets the FSM send `Suspend`. On
@@ -147,3 +147,15 @@ over; but a socket problem is a missing subsystem, which `CLAUDE.md` rule 3
 says is never fatal. Consequences: the only startup failures are an
 invalid config and a running instance; a daemon without IPC can only be
 inspected through the journal.
+
+## ADR-19 — A wake by the user is classified before the engine sees the resume
+**2026-10.** In the cycle the daemon now classifies the wake (still in
+`sleep::planner`, still with its clock) before handing the resume to the
+engine, and sends `Event::ResumedByUser` instead of `Event::Resumed` for a
+wake that was not the alarm. Supersedes the "`Resumed` first, then
+`Activity`" order of ADR-13. Reason: on `Resumed` the engine queues the
+critical action at a critical battery; the `Activity` that followed could
+not take it back, so a user opening the lid at 9% was hibernated, while
+`docs/10-long-sleep-rtc.md` puts the user before the critical action.
+Consequences: one more event, handled like `Resumed` outside the cycle;
+the engine still has no clock.
