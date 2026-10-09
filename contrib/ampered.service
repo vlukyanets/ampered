@@ -17,7 +17,7 @@ StateDirectory=ampered
 
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/sys/class/backlight /sys/firmware/acpi /sys/devices/system/cpu /sys/class/rtc /sys/class/leds
+ReadWritePaths=-/sys/class/backlight -/sys/firmware/acpi -/sys/devices/system/cpu -/sys/class/rtc -/sys/class/leds
 PrivateTmp=yes
 NoNewPrivileges=yes
 RestrictAddressFamilies=AF_UNIX AF_NETLINK
