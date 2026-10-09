@@ -80,7 +80,7 @@ disabled. `sysfs` paths must be absolute; values are strings or integers.
 | `grace_period` | `"3m"` | Filters out brief power blips |
 | `check_interval` | `"20m"` | Wake-up period; validated as `≥ 2m` |
 | `awake_window` | `"45s"` | How long to stay awake to check |
-| `alarm_slack` | `"90s"` | Tolerance for `classify_wake` |
+| `alarm_slack` | `"90s"` | Tolerance for `classify_wake`; validated as shorter than `check_interval` |
 | `battery_critical_percent` | `10` | |
 | `critical_action` | `"hibernate"` | `hibernate` / `poweroff` |
 | `rtc_backend` | `"wakealarm"` | `wakealarm` / `rtcwake` |

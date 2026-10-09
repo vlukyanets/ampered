@@ -442,6 +442,11 @@ impl Config {
         if self.server.battery_critical_percent > 100 {
             return invalid("[server] battery_critical_percent must be 0..=100");
         }
+        // Otherwise a wake by the user right after a suspend still falls
+        // within the slack of the alarm and reads as the alarm.
+        if self.server.alarm_slack >= self.server.check_interval {
+            return invalid("[server] alarm_slack must be shorter than check_interval");
+        }
 
         Ok(())
     }
@@ -606,6 +611,14 @@ mod tests {
         let command = display("backend = \"command\"\noff_command = \"x\"\n");
         let err = Config::parse(&command).unwrap().validate().unwrap_err();
         assert!(err.to_string().contains("requires both"), "{err}");
+    }
+
+    /// A slack as wide as the interval would read every wake as the alarm.
+    #[test]
+    fn alarm_slack_must_be_shorter_than_check_interval() {
+        let text = EXAMPLE.replace("alarm_slack = \"90s\"", "alarm_slack = \"20m\"");
+        let err = Config::parse(&text).unwrap().validate().unwrap_err();
+        assert!(err.to_string().contains("alarm_slack"), "{err}");
     }
 
     #[test]
