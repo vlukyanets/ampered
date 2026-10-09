@@ -7,6 +7,13 @@ A Unix stream socket at `[general] socket` (default
 Protocol — **NDJSON**: request line → response line, connection closes.
 Exception — `subscribe`: a stream of events until the client disconnects.
 
+At startup an existing socket file is replaced only when nothing answers on
+it (a daemon that was killed leaves one behind). A socket that answers
+means another ampered is running, and the new instance exits (ADR-18). Any
+other failure to create the socket leaves the daemon running without IPC,
+with `"ipc"` in `degraded` (visible in the journal and `STATUS=`); on exit
+it leaves whatever is at the socket path alone, since it never bound it.
+
 ## Requests
 
 ```json
@@ -52,7 +59,7 @@ Exception — `subscribe`: a stream of events until the client disconnects.
 ```
 
 `degraded` — a list of subsystems that are `unavailable`, and of
-configuration that works against ampered: `"wayland"`, `"backlight"`,
+configuration that works against ampered: `"ipc"`, `"wayland"`, `"backlight"`,
 `"display"`, `"logind"`, `"hibernate"`, `"rtc"`, `"conflict:tlp"`,
 `"lid-switch"`, `"idle-action"` (the last two from `logind.conf`,
 `09-sleep-logind.md`).

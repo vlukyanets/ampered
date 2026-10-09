@@ -134,3 +134,16 @@ critical battery, where `docs/10-long-sleep-rtc.md` wants it to stay in
 `Checking` and retry when the window closes. Consequences: one more event;
 outside `Checking` it behaves as `Activity` did — `Suspending` backs out
 to `Active`, `Armed` counts a failed attempt.
+
+## ADR-18 — A live socket stops a second instance; any other socket failure degrades
+**2026-10.** At startup `ipc::listen` connects to an existing socket before
+replacing it: if a daemon answers, startup fails with "another ampered is
+listening"; a socket nobody answers on is a leftover and is replaced. Any
+other failure to create the socket (an unwritable `/run/ampered`, a regular
+file in the way) is logged, `"ipc"` goes into `degraded`, and the daemon
+runs without IPC. Reason: two daemons on one machine would both dim and
+both sleep (README), so a second instance must not quietly take the socket
+over; but a socket problem is a missing subsystem, which `CLAUDE.md` rule 3
+says is never fatal. Consequences: the only startup failures are an
+invalid config and a running instance; a daemon without IPC can only be
+inspected through the journal.

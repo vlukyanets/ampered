@@ -61,6 +61,8 @@ planner. See the component table below for exactly what each side does.
 | No `ext_idle_notifier_v1` in the registry | `idle: unavailable`; everything else works |
 | No backlight device | dim — a no-op with a single `warn!` |
 | No D-Bus / logind | sleep disabled, `degraded: ["logind"]` in status |
+| IPC socket cannot be created | no `amperedctl`, `degraded: ["ipc"]`; idle, power and sleep keep working |
+| Another ampered answers on the socket | exit with an error (ADR-18) |
 | No `wakealarm` | long sleep disabled with `error!` at startup |
 | sysfs write error | `warn!`, the FSM transition happens anyway |
 | Panic in an actor | the process crashes; systemd `Restart=on-failure` |
