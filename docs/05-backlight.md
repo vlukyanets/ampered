@@ -26,6 +26,7 @@ dim_to(pct):
   if state == Dimmed: return                     // idempotent
   pre_dim = read(brightness)
   target = max(max_brightness * pct / 100, max_brightness * min_percent / 100)
+  target = min(target, pre_dim)                  // dim never brightens
   written_target = target
   transition(pre_dim → target, duration = transition, step ≈ 16ms)
   state = Dimmed
@@ -33,6 +34,9 @@ dim_to(pct):
 
 `min_percent` protects against `0` on panels where 0 turns the backlight
 off entirely (the user wouldn't even see the cursor).
+
+A panel already at or below the target stays where it is: dimming a screen
+the user has turned down to 5% must not fade it up to `dim_percent`.
 
 ## Restore
 
