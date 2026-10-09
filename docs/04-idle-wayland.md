@@ -61,7 +61,7 @@ idle has no effect at all (`server` mode).
 | Hyprland | yes | |
 | river, niri, labwc | yes | wlroots-based |
 | KWin ≥ 5.27 | yes | DPMS via `kscreen-doctor` |
-| Mutter / GNOME | **no** | roadmap: `mutter` backend via `org.gnome.Mutter.IdleMonitor` |
+| Mutter / GNOME | **no** | not planned (`docs/18-roadmap.md`) |
 | Weston | no | not planned |
 
 ## Fallback: logind IdleHint
